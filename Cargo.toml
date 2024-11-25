@@ -13,7 +13,7 @@ aws-sdk-dynamodb = "1.54.0"
 serde_json = "1.0.132"
 serde = {version = "1.0.215", features = ["derive"]}
 thiserror = "2.0.3"
-reqwest = { version = "0.12.9", features = ["json"] }
+reqwest = { version = "0.12.9", features = ["json", "rustls-tls"] }
 
 [package.metadata.lambda.env]
 CHECK_URL = "http://localhost:8000"

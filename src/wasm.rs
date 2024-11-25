@@ -1,8 +1,9 @@
 use wasmtime::*;
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
+// use tokio::time::{sleep, Duration};
 
-use super::storage::Storage;
+use super::storage::{Storage, KeySet};
 
 #[derive(Debug)]
 pub struct MyState<D: Storage> {
@@ -29,12 +30,6 @@ fn read_result_from_wasm<D: Storage>(memory: &Memory, store: &Store<MyState<D>>,
     let result_slice = &memory.data(&store)[result_base..][..result_len];
 
     Ok(result_slice.into())
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct KeySet {
-    pub read_set: Vec<(String, Vec<u8>)>,
-    pub write_set: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,6 +63,11 @@ impl<D: Storage> WasmBlob<D> {
     pub fn link_blob(&mut self) -> wasmtime::Result<()> {
         self.linker.func_wrap_async("env", "get_key", | mut caller: Caller<'_, MyState<D>>, input: (u32, u32, u32, u32, u32) | {
             Box::new(async move {
+                // Sanity check to make sure we're getting some interleaving
+                // for i in 0..10 {
+                //     println!("Read function wrapper: {}", i);
+                //     sleep(Duration::from_millis(100)).await;
+                // }
                 let (result_base, table_base, table_len, key_base, key_len) = input;
                 println!("Calling into the get wrapper");
                 let memory = caller.get_export("memory").and_then(|m| m.into_memory()).unwrap();

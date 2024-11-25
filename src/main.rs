@@ -63,6 +63,10 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         Err(_) => panic!("CHECK_URL not set"),
     };
 
+    let body = _event.body().to_vec();
+    let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
+    let args = body_json["args"].clone();
+
     let check_client = ConsistencyClient::new(check_url.clone());
     
     let mut config = Config::new();
@@ -90,22 +94,32 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
     };
 
     println!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
-
-    // Fire off another thread to handle the consistency check
-    // let check_handle = tokio::spawn(check_client.do_check());
-
-    check_client.do_ping().await.unwrap();
+    let check_store = store.clone();
 
     // Run the wasm blob, this should be happening in parallel with the check
-    let wasm_result = match wasm_blob.run_blob(instance).await {
-        Ok(res) => res,
-        Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
-    };
+    let wasm_handle= tokio::spawn(async move {
+        wasm_blob.store.data_mut().reset_writes();
+        let wasm_result = match wasm_blob.run_blob(instance).await {
+            Ok(res) => res,
+            Err(e) => return Err(WasmError::WasmExecError(e.to_string())),
+        };
+        println!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
+        let all_writes = wasm_blob.store.data().get_all_writes();
+        Ok(all_writes)
+    });
 
-    println!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
+    let check_body = ConsistencyCheckBody::create(&check_store, key_set, args, "remote_endpoint".to_string()).await;
+    // Fire off another thread to handle the consistency check
+    match check_client.do_check(check_body).await {
+        Ok(res) => res,
+        Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
+    };
+    check_client.do_ping().await.unwrap();
 
     // Grab the writes the function made
-    // let all_writes = wasm_blob.store.data().get_all_writes();
+    let updates = wasm_handle.await.unwrap()?;
+    println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+
     // match check_client.do_followup(all_writes).await {
     //     Ok(_) => println!("Followup sent successfully"),
     //     Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
@@ -133,7 +147,7 @@ async fn main() -> Result<(), Error> {
     let mut store = DummyStorage {
         store: Arc::new(Mutex::new(HashMap::new())),
         writes: Vec::new(),
-        table_partition: None,
+        // table_partition: None,
     };
 
     let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
