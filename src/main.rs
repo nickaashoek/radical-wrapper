@@ -4,6 +4,7 @@ use storage::Storage;
 use tokio::sync::Mutex;
 use wasmtime::*;
 use thiserror;
+use uuid::{self, Uuid};
 
 mod storage;
 use storage::*;
@@ -66,6 +67,10 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
     let body = _event.body().to_vec();
     let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
     let args = body_json["args"].clone();
+    let mut exec_id = Uuid::new_v4();
+    if !body_json["id"].is_null() {
+        exec_id = Uuid::parse_str(body_json["id"].as_str().unwrap()).unwrap();
+    }
 
     let check_client = ConsistencyClient::new(check_url.clone());
     
@@ -120,10 +125,10 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
     let updates = wasm_handle.await.unwrap()?;
     println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
 
-    // match check_client.do_followup(all_writes).await {
-    //     Ok(_) => println!("Followup sent successfully"),
-    //     Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
-    // }
+    match check_client.do_followup(exec_id,updates).await {
+        Ok(_) => println!("Followup sent successfully"),
+        Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
+    }
 
     // let check_result = match check_handle.await {
     //     Ok(res) => res,

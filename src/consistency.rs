@@ -111,9 +111,9 @@ impl ConsistencyClient {
         format!("{}/check", self.url)
     }
 
-    // fn followup_endpoint(&self) -> String {
-    //     format!("{}/update", self.url)
-    // }
+    fn followup_endpoint(&self) -> String {
+        format!("{}/update", self.url)
+    }
 
     pub async fn do_ping(&self) -> Result<(), String> {
         let response = self.client.get(self.ping_endpoint()).send().await.unwrap();
@@ -139,18 +139,19 @@ impl ConsistencyClient {
         })
     }
 
-    // pub async fn do_followup(&self, writes: Vec<Value>) -> Result<(), ()> {
-    //     let res = self.client.post(self.followup_endpoint())
-    //         .json(&serde_json::json!({
-    //             "writes": writes
-    //         }))
-    //         .send()
-    //         .await
-    //         .unwrap();
+    pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
+        let res = self.client.post(self.followup_endpoint())
+            .json(&serde_json::json!({
+                "Updates": writes,
+                "Id": id.to_string()
+            }))
+            .send()
+            .await
+            .unwrap();
 
-    //     let resp_json: Value = res.json().await.unwrap();
+        let resp_json: Value = res.json().await.unwrap();
 
-    //     println!("Reponse json: {:?}", resp_json);   
-    //     Ok(())
-    // }
+        println!("Reponse json: {:?}", resp_json);   
+        Ok(())
+    }
 }
