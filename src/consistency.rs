@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 // use tokio::time::{sleep, Duration};
 
-// Module for interacting with the consistency check server
 use serde::{Deserialize, Serialize};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::storage::{Storage, KeySet};
 
@@ -30,7 +30,7 @@ pub struct KeyInfo {
 pub struct ConsistencyCheckBody {
     pub read_keys: Vec<KeyInfo>,
     pub write_keys: Vec<KeyInfo>,
-    pub id: u64,
+    pub id: String,
     pub args: Value,
     pub function: String,
 }
@@ -83,10 +83,12 @@ impl ConsistencyCheckBody {
             }
         }
 
+        let execution_id = Uuid::new_v4().to_string();
+
         return ConsistencyCheckBody {
             read_keys: read_keys,
             write_keys: write_keys,
-            id: 0,
+            id: execution_id,
             args: args,
             function: remote_endpoint.clone()
         }
