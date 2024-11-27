@@ -61,11 +61,13 @@ impl From<WrapperError> for Diagnostic {
 
 async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<Response<Body>, Error> {
     
+    println!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
         Ok(url) => url,
         Err(_) => panic!("CHECK_URL not set"),
     };
 
+    println!("Getting the body json from the request to the function");
     let body = _event.body().to_vec();
     let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
     let args = body_json["args"].clone();
@@ -86,6 +88,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         Err(e) => return Err(WasmError::LinkerError(e.to_string()).into()),
     }
 
+    println!("Settingup the instance");
     // Setup an instance of the blob that we can use to run the function + guess
     let instance = match wasm_blob.setup_instance(serde_json::json!({
         "target-user": "user-1",
@@ -94,6 +97,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
     };
 
+    println!("Instance setup; going to guess the key");
     // Guess the key set so we can hand it to the consistency check
     let key_set = match wasm_blob.guess_key(instance).await {
         Ok(ks) => ks,
@@ -112,16 +116,20 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         };
         println!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
         let all_writes = wasm_blob.store.data().get_all_writes();
+        println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
         Ok(all_writes)
     });
 
-    let check_body = ConsistencyCheckBody::create(&check_store, key_set, args, "remote_endpoint".to_string()).await;
+    let remote_endpoint = match std::env::var("REMOTE_URL") {
+        Ok(endpoint) => endpoint,
+        Err(_) => panic!("REMOTE_ENDPOINT not set"),
+    };
+    let check_body = ConsistencyCheckBody::create(&check_store, key_set, args, remote_endpoint).await;
     // Fire off another thread to handle the consistency check
     match check_client.do_check(check_body).await {
         Ok(res) => res,
         Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
     };
-    check_client.do_ping().await.unwrap();
 
     // Grab the writes the function made
     let updates = wasm_handle.await.unwrap()?;
@@ -154,12 +162,23 @@ async fn main() -> Result<(), Error> {
         Err(_) => panic!("DEPLOYMENT not set"),
     };
 
-    let mut store: StorageProvider = match deployment_env.as_str() {
-        "local" => StorageProvider::Dummy(DummyStorage {
-            store: Arc::new(Mutex::new(HashMap::new())),
-            writes: Vec::new(),
-            // table_partition: None,
-        }),
+    // Set up the store for the wasm function to use
+    let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let store: StorageProvider = match deployment_env.as_str() {
+        "local" => {
+            let mut store = StorageProvider::Dummy(DummyStorage {
+                store: Arc::new(Mutex::new(HashMap::new())),
+                writes: Vec::new(),
+                // table_partition: None,
+            });
+
+            for (i, data) in dummy_data.iter().enumerate() {
+                store.put("radical_testing".into(), format!("user-{}", i).into(), serde_json::json!({
+                    "password": data,
+                }).to_string().into_bytes()).await;
+            } 
+            store
+        },
         "edge" => {
             let region = RegionProviderChain::default_provider().or_else("eu-central-1");
             let config = aws_config::defaults(BehaviorVersion::latest())
@@ -167,22 +186,22 @@ async fn main() -> Result<(), Error> {
                 .load()
                 .await;
 
-            StorageProvider::Dynamo(DynamoStore {
+            let store = StorageProvider::Dynamo(DynamoStore {
                 client: aws_sdk_dynamodb::Client::new(&config),
                 all_writes: Vec::new(),
                 // table_partition: None,
-            })
+            });
+
+            // for (i, _) in dummy_data.iter().enumerate() {
+            //     let (version, _) = store.get("radical_testing".into(), &format!("user-{}", i).into()).await.unwrap();
+            //     println!("Version for key user-{}: {}", i, version);
+            // }
+
+            store
         },
         _ => panic!("Invalid deployment environment"),
     };
 
-    // Set up the store for the wasm function to use
-    let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
-    for (i, data) in dummy_data.iter().enumerate() {
-        store.put("radical_testing".into(), format!("user-{}", i).into(), serde_json::json!({
-            "password": data,
-        }).to_string().into_bytes()).await;
-    } 
     
     run(service_fn(|event: Request| async {
         entry_point(event, store.clone()).await

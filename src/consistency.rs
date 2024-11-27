@@ -2,7 +2,7 @@ use std::collections::HashSet;
 // use tokio::time::{sleep, Duration};
 
 use serde::{Deserialize, Serialize};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -103,24 +103,12 @@ impl ConsistencyClient {
         }
     }
 
-    fn ping_endpoint(&self) -> String {
-        format!("{}/", self.url)
-    }
-
     fn check_endpoint(&self) -> String {
         format!("{}/check", self.url)
     }
 
     fn followup_endpoint(&self) -> String {
         format!("{}/update", self.url)
-    }
-
-    pub async fn do_ping(&self) -> Result<(), String> {
-        let response = self.client.get(self.ping_endpoint()).send().await.unwrap();
-        match response.status() {
-            StatusCode::OK => Ok(()),
-            _ => Err("Failed to ping".to_string())
-        }
     }
 
     pub async fn do_check(&self, check_body: ConsistencyCheckBody) -> Result<CheckResult, ()> {

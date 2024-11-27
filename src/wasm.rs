@@ -112,7 +112,7 @@ impl<D: Storage> WasmBlob<D> {
                 memory.read(caller.as_context_mut(), value_base as usize, value.as_mut_slice()).unwrap();
 
                 let state = caller.data_mut();
-                println!("writing {:?} {:?}", String::from_utf8(key.clone()), String::from_utf8(value.clone()));
+                println!("writing {:?} {:?} to table {}", String::from_utf8(key.clone()), String::from_utf8(value.clone()), table);
 
                 state.external_store.put(table, key, value).await;
             })
