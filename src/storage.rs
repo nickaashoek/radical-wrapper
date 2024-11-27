@@ -1,3 +1,5 @@
+use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes};
+use aws_sdk_dynamodb::primitives::Blob;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{hash_map::Entry, HashMap}, sync::Arc};
@@ -78,5 +80,172 @@ impl Storage for DummyStorage {
 
     // fn set_partition(&mut self, partition: i64) {
     //     self.table_partition = Some(partition);
+    // }
+}
+
+#[derive(Clone)]
+pub struct DynamoStore {
+    pub client: aws_sdk_dynamodb::Client,
+    pub all_writes: Vec<Value>,
+    // pub table_partition: Option<i64>,
+}
+
+impl Storage for DynamoStore {
+
+    async fn put(&mut self, table: String, key: Vec<u8>, value: Vec<u8>) {
+        // let partition = get_partition_name(table.clone(), self.table_partition);
+        self.all_writes.push(json!({
+            "key": &key,
+            "value": serde_json::from_slice::<Value>(&value).unwrap(),
+            "table": table.clone(),
+        }));
+
+        self.client
+            .update_item()
+            .table_name(table)
+            .key("id", AttributeValue::B(Blob::new(key)))
+            .expression_attribute_values(":value", AttributeValue::B(Blob::new(value)))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .update_expression("ADD version :one SET object_value = :value")
+            .send()
+            .await
+            .expect("failed to put_item");
+    }
+
+    async fn get(&self, table: String, key: &Vec<u8>) -> Option<(i64, Vec<u8>)> {
+        let result = self.client
+            .get_item()
+            .table_name(table)
+            .key("id", AttributeValue::B(Blob::new(key.clone())))
+            .send()
+            .await
+            .expect("failed to get_item");
+
+        result.item().and_then(|item| {
+            let version = item.get("version")?.as_n().ok()?.parse::<i64>().ok()?;
+            let value = item.get("object_value")?.as_b().ok()?.clone().into_inner();
+            Some((version, value))
+        })
+    }
+
+    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)> {
+        let mut key_map = HashMap::<String, Vec<HashMap<String, AttributeValue>>>::new();
+        for (table, key) in table_key_pairs {
+            // let table = make_partition(table.to_string(), self.table_partition);
+            let mut new_key_av_map = HashMap::<String, AttributeValue>::new();
+            new_key_av_map.insert("id".to_string(), AttributeValue::B(Blob::new(key.to_vec())));
+
+            if key_map.contains_key(table) {
+                let curr_keys = key_map.get_mut(&table.clone()).unwrap();
+                curr_keys.push(new_key_av_map);
+            } else {
+                key_map.insert(
+                    table.clone(),
+                    vec![new_key_av_map]
+                );
+            }
+        }
+
+        let mut batch_input = HashMap::<String, KeysAndAttributes>::new();
+        for (table, keys) in key_map {
+            batch_input.insert(
+                table,
+                KeysAndAttributes::builder().set_keys(Some(keys)).build().unwrap(),
+            );
+        }
+
+        let result = self.client
+            .batch_get_item()
+            .set_request_items(Some(batch_input))
+            .send()
+            .await
+            .expect("batch_get_item failed");
+
+        let mut output_vec = Vec::new();
+        if let Some(responses) = result.responses() {
+            for (table, items) in responses {
+                for item in items {
+                    let key = item.get("id").unwrap().as_b().unwrap().clone().into_inner();
+                    let version = item.get("version")
+                        .and_then(|v| { v.as_n().ok() })
+                        .and_then(|v| { v.parse::<i64>().ok() });
+
+                    let value = item.get("object_value")
+                        .and_then(|v| { v.as_b().ok() })
+                        .and_then(|v| { Some(v.clone().into_inner()) });
+
+                    let version_value = if let (Some(version), Some(value)) = (version, value) {
+                        Some((version, value))
+                    } else {
+                        None
+                    };
+
+                    output_vec.push((table.to_string(), key.to_vec(), version_value));
+                }
+            }
+        }
+        output_vec
+    }
+
+    fn reset_writes(&mut self) {
+        self.all_writes.clear();
+    }
+
+    fn get_all_writes(&self) -> Vec<Value> {
+        self.all_writes.clone()
+    }
+
+    // fn set_partition(&mut self, partition: i64) {
+    //     self.table_partition = Some(partition);
+    // }
+}
+
+#[derive(Clone)]
+pub enum StorageProvider {
+    Dummy(DummyStorage),
+    Dynamo(DynamoStore),
+}
+
+impl Storage for StorageProvider {
+    async fn put(&mut self, table: String, key: Vec<u8>, value: Vec<u8>) {
+        match self {
+            StorageProvider::Dummy(store) => store.put(table, key, value).await,
+            StorageProvider::Dynamo(store) => store.put(table, key, value).await,
+        }
+    }
+
+    async fn get(&self, table: String, key: &Vec<u8>) -> Option<(i64, Vec<u8>)> {
+        match self {
+            StorageProvider::Dummy(store) => store.get(table, key).await,
+            StorageProvider::Dynamo(store) => store.get(table, key).await,
+        }
+    }
+
+    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)> {
+        match self {
+            StorageProvider::Dummy(store) => store.batch_get(table_key_pairs).await,
+            StorageProvider::Dynamo(store) => store.batch_get(table_key_pairs).await,
+        }
+    }
+
+    fn reset_writes(&mut self) {
+        match self {
+            StorageProvider::Dummy(store) => store.reset_writes(),
+            StorageProvider::Dynamo(store) => store.reset_writes(),
+        }
+    }
+
+    fn get_all_writes(&self) -> Vec<Value> {
+        match self {
+            StorageProvider::Dummy(store) => store.get_all_writes(),
+            StorageProvider::Dynamo(store) => store.get_all_writes(),
+        }
+    }
+
+    // fn set_partition(&mut self, partition: i64) {
+    //     match self {
+    //         StorageType::Dummy(store) => store.set_partition(partition),
+    //         StorageType::Dynamo(store) => store.set_partition(partition),
+    //     }
     // }
 }

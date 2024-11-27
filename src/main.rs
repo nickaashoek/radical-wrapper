@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use lambda_http::{lambda_runtime::Diagnostic, run, service_fn, tracing, Body, Error, Request, Response};
 use storage::Storage;
-use tokio::sync::Mutex;
+use tokio::{join, sync::Mutex};
 use wasmtime::*;
 use thiserror;
 use uuid::{self, Uuid};
@@ -14,6 +15,7 @@ use consistency::*;
 
 mod wasm;
 use wasm::*;
+
 
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
@@ -147,17 +149,37 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing::init_default_subscriber();
-    
-    // Set up the store for the wasm function to use
-    let mut store = DummyStorage {
-        store: Arc::new(Mutex::new(HashMap::new())),
-        writes: Vec::new(),
-        // table_partition: None,
+    let deployment_env = match std::env::var("DEPLOYMENT") {
+        Ok(env) => env,
+        Err(_) => panic!("DEPLOYMENT not set"),
     };
 
+    let mut store: StorageProvider = match deployment_env.as_str() {
+        "local" => StorageProvider::Dummy(DummyStorage {
+            store: Arc::new(Mutex::new(HashMap::new())),
+            writes: Vec::new(),
+            // table_partition: None,
+        }),
+        "edge" => {
+            let region = RegionProviderChain::default_provider().or_else("eu-central-1");
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .region(region)
+                .load()
+                .await;
+
+            StorageProvider::Dynamo(DynamoStore {
+                client: aws_sdk_dynamodb::Client::new(&config),
+                all_writes: Vec::new(),
+                // table_partition: None,
+            })
+        },
+        _ => panic!("Invalid deployment environment"),
+    };
+
+    // Set up the store for the wasm function to use
     let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
     for (i, data) in dummy_data.iter().enumerate() {
-        store.put("dummy-data".into(), format!("user-{}", i).into(), serde_json::json!({
+        store.put("radical_testing".into(), format!("user-{}", i).into(), serde_json::json!({
             "password": data,
         }).to_string().into_bytes()).await;
     } 
