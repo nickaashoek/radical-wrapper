@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
+use aws_sdk_dynamodb::operation::execute_statement;
 use lambda_http::{lambda_runtime::Diagnostic, run, service_fn, tracing, Body, Error, Request, Response};
 use storage::Storage;
 use tokio::{join, sync::Mutex};
@@ -124,7 +125,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         Ok(endpoint) => endpoint,
         Err(_) => panic!("REMOTE_ENDPOINT not set"),
     };
-    let check_body = ConsistencyCheckBody::create(&check_store, key_set, args, remote_endpoint).await;
+    let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
     // Fire off another thread to handle the consistency check
     match check_client.do_check(check_body).await {
         Ok(res) => res,

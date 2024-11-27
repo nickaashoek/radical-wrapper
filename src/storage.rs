@@ -96,7 +96,7 @@ impl Storage for DynamoStore {
         // let partition = get_partition_name(table.clone(), self.table_partition);
         self.all_writes.push(json!({
             "key": &key,
-            "value": serde_json::from_slice::<Value>(&value).unwrap(),
+            "value": &value,
             "table": table.clone(),
         }));
 

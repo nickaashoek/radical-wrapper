@@ -1,6 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 // use tokio::time::{sleep, Duration};
-
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use serde_json::Value;
@@ -10,8 +9,14 @@ use super::storage::{Storage, KeySet};
 
 #[derive(Serialize, Deserialize)]
 pub struct CheckResult {
-    pub result: bool,
-    pub latency: i64
+    #[serde(rename = "dcResult")]
+    pub result: Value,
+    #[serde(rename = "checkResult")]
+    pub check_result: bool,
+    #[serde(rename = "latencies")]
+    pub latencies: HashMap<String, i64>,
+    #[serde(rename = "updates")]
+    pub updates: Vec<Value>,
 }
 
 pub struct ConsistencyClient {
@@ -33,10 +38,12 @@ pub struct ConsistencyCheckBody {
     pub id: String,
     pub args: Value,
     pub function: String,
+    #[serde(rename = "ccRate")]
+    pub consistency_rate: f64,
 }
 
 impl ConsistencyCheckBody {
-    pub async fn create<D: Storage>(external_store: &D, key_set: KeySet, args: Value, remote_endpoint: String) -> Self {
+    pub async fn create<D: Storage>(external_store: &D, execution_id: Uuid, key_set: KeySet, args: Value, remote_endpoint: String) -> Self {
         // Sanity check to make sure we're interleaving with the execution of the function
         // for i in 0..10 {
         //     println!("Check body creation: {}", i);
@@ -83,14 +90,13 @@ impl ConsistencyCheckBody {
             }
         }
 
-        let execution_id = Uuid::new_v4().to_string();
-
         return ConsistencyCheckBody {
             read_keys: read_keys,
             write_keys: write_keys,
-            id: execution_id,
+            id: execution_id.to_string(),
             args: args,
-            function: remote_endpoint.clone()
+            function: remote_endpoint.clone(),
+            consistency_rate: 1.0,
         }
     }
 }
@@ -119,12 +125,9 @@ impl ConsistencyClient {
             .unwrap();
 
         let resp_json: Value = res.json().await.unwrap();
-
         println!("Reponse json: {:?}", resp_json);   
-        Ok(CheckResult {
-            result: true,
-            latency: 0
-        })
+        let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
+        Ok(response)
     }
 
     pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
