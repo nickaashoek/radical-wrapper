@@ -59,7 +59,7 @@ impl From<WrapperError> for Diagnostic {
     }
 }
 
-async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D) -> Result<Response<Body>, Error> {
+async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool) -> Result<Response<Body>, Error> {
     
     println!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
@@ -97,14 +97,21 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D) -> Re
         Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
     };
 
-    println!("Instance setup; going to guess the key");
-    // Guess the key set so we can hand it to the consistency check
-    let key_set = match wasm_blob.guess_key(instance).await {
-        Ok(ks) => ks,
-        Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
+    let mut key_set = KeySet {
+        read_set: Vec::new(),
+        write_set: Vec::new(),
     };
+    if near_user {
+        println!("Instance setup; going to guess the key");
+        // Guess the key set so we can hand it to the consistency check
+        key_set = match wasm_blob.guess_key(instance).await {
+            Ok(ks) => ks,
+            Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
+        };
+        println!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
+    }
 
-    println!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
+
     let check_store = store.clone();
 
     // Run the wasm blob, this should be happening in parallel with the check
@@ -120,42 +127,39 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D) -> Re
         Ok(all_writes)
     });
 
-    let remote_endpoint = match std::env::var("REMOTE_URL") {
-        Ok(endpoint) => endpoint,
-        Err(_) => panic!("REMOTE_ENDPOINT not set"),
-    };
-    let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
-    let check_result = match check_client.do_check(check_body).await {
-        Ok(res) => res,
-        Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
-    };
+    // Only do the consistency check if we're near the user
+    if near_user {
+        let remote_endpoint = match std::env::var("REMOTE_URL") {
+            Ok(endpoint) => endpoint,
+            Err(_) => panic!("REMOTE_ENDPOINT not set"),
+        };
+        let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
+        println!("Sending consistency check request");
+        let check_result = match check_client.do_check(check_body).await {
+            Ok(res) => res,
+            Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
+        };
 
+        if check_result.check_result {
+            println!("Consistency check passed. Collect updates and forward.");
+            // Grab the writes the function made
+            let updates = wasm_handle.await.unwrap()?;
+            println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
 
-    if check_result.check_result {
-        println!("Consistency check passed. Collect updates and forward.");
-        // Grab the writes the function made
-        let updates = wasm_handle.await.unwrap()?;
-        println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
-
-        match check_client.do_followup(exec_id,updates).await {
-            Ok(_) => println!("Followup sent successfully"),
-            Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
-        }
-    } else {
-        println!("Consistency check failed. Syncing state and returning near data result");
-        if check_result.updates.len() == 0 {
-            println!("No updates to apply");
+            match check_client.do_followup(exec_id,updates).await {
+                Ok(_) => println!("Followup sent successfully"),
+                Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
+            }
         } else {
-            println!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
-            store.batch_update(&check_result.updates).await;
+            println!("Consistency check failed. Syncing state and returning near data result");
+            if check_result.updates.len() == 0 {
+                println!("No updates to apply");
+            } else {
+                println!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
+                store.batch_update(&check_result.updates).await;
+            }
         }
     }
-
-    // let check_result = match check_handle.await {
-    //     Ok(res) => res,
-    //     Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
-    // };
-    // println!("Check result: {}", serde_json::to_string_pretty(&check_result).unwrap());
     
     let resp = Response::builder()
     .status(200)
@@ -173,10 +177,13 @@ async fn main() -> Result<(), Error> {
         Err(_) => panic!("DEPLOYMENT not set"),
     };
 
+    let mut near_user = true;
+
     // Set up the store for the wasm function to use
     let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
     let store: StorageProvider = match deployment_env.as_str() {
         "local" => {
+            near_user = true;
             let mut store = StorageProvider::Dummy(DummyStorage {
                 store: Arc::new(Mutex::new(HashMap::new())),
                 writes: Vec::new(),
@@ -191,6 +198,7 @@ async fn main() -> Result<(), Error> {
             store
         },
         "edge" => {
+            near_user = true;
             let region = RegionProviderChain::default_provider().or_else("eu-central-1");
             let config = aws_config::defaults(BehaviorVersion::latest())
                 .region(region)
@@ -210,11 +218,27 @@ async fn main() -> Result<(), Error> {
 
             store
         },
+        "datacenter" => {
+            near_user = false;
+            let region = RegionProviderChain::default_provider().or_else("eu-central-1");
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .region(region)
+                .load()
+                .await;
+
+            let store = StorageProvider::Dynamo(DynamoStore {
+                client: aws_sdk_dynamodb::Client::new(&config),
+                all_writes: Vec::new(),
+                // table_partition: None,
+            });
+
+            store
+        }
         _ => panic!("Invalid deployment environment"),
     };
 
     
     run(service_fn(|event: Request| async {
-        entry_point(event, &mut store.clone()).await
+        entry_point(event, &mut store.clone(), near_user).await
     })).await
 }
