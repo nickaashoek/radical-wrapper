@@ -1,9 +1,10 @@
-use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes};
+use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest};
 use aws_sdk_dynamodb::primitives::Blob;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{hash_map::Entry, HashMap}, sync::Arc};
 use tokio::sync::Mutex;
+use base64::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 pub struct KeySet {
@@ -11,11 +12,32 @@ pub struct KeySet {
     pub write_set: Vec<(String, Vec<u8>)>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct UpdateItem {
+    #[serde(rename = "table")]
+    pub table: String,
+    #[serde(rename = "value", deserialize_with = "deserialize_bytes")]
+    pub value: Vec<u8>,
+    #[serde(rename = "key", deserialize_with = "deserialize_bytes")]
+    pub key: Vec<u8>,
+    #[serde(rename = "version")]
+    pub version: i64,
+}
+
+fn deserialize_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(BASE64_STANDARD.decode(s).unwrap())
+}
+
 pub trait Storage: Clone + Send {
     fn put(&mut self, table: String, key: Vec<u8>, value: Vec<u8>) -> impl std::future::Future<Output = ()> + Send;
     fn get(&self, table: String, key: &Vec<u8>) -> impl std::future::Future<Output = Option<(i64, Vec<u8>)>> + Send;
 
     fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> impl std::future::Future<Output = Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)>> + Send;
+    fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> impl std::future::Future<Output = ()> + Send;
 
     fn reset_writes(&mut self);
     fn get_all_writes(&self) -> Vec<Value>;
@@ -68,6 +90,12 @@ impl Storage for DummyStorage {
             items.push((table.clone(), key.clone(), item));
         }
         items
+    }
+
+    async fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> () {
+        for item in table_key_pairs {
+            self.put(item.table.clone(), item.key.clone(), item.value.clone()).await;
+        }
     }
 
     fn reset_writes(&mut self) {
@@ -187,6 +215,31 @@ impl Storage for DynamoStore {
         output_vec
     }
 
+    async fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> () {
+        let mut input_items = Vec::<WriteRequest>::new();
+
+        for item in     table_key_pairs {
+            println!("Setting up put request for item {} {:?}", String::from_utf8(item.key.clone()).unwrap(), item.key.clone());
+            let put_request =  PutRequest::builder()
+                    .item("id", AttributeValue::B(Blob::new(item.key.clone())))
+                    .item("object_value", AttributeValue::B(Blob::new(item.value.clone())))
+                    .item("version", AttributeValue::N(item.version.to_string()))
+                    .build()
+                    .unwrap();
+            println!("Setup put request for item {:?}", put_request.item());
+            let write_request = WriteRequest::builder()
+                .put_request(put_request)
+                .build();
+            input_items.push(write_request);
+        }
+
+        self.client.batch_write_item()
+            .request_items("radical_testing", input_items)
+            .send()
+            .await
+            .expect("batch_write_item failed");
+    }
+
     fn reset_writes(&mut self) {
         self.all_writes.clear();
     }
@@ -225,6 +278,13 @@ impl Storage for StorageProvider {
         match self {
             StorageProvider::Dummy(store) => store.batch_get(table_key_pairs).await,
             StorageProvider::Dynamo(store) => store.batch_get(table_key_pairs).await,
+        }
+    }
+
+    async fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> () {
+        match self {
+            StorageProvider::Dummy(store) => store.batch_update(table_key_pairs).await,
+            StorageProvider::Dynamo(store) => store.batch_update(table_key_pairs).await,
         }
     }
 

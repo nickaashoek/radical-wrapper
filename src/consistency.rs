@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
-// use tokio::time::{sleep, Duration};
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::storage::{Storage, KeySet};
+use super::storage::{Storage, KeySet, UpdateItem};
 
 #[derive(Serialize, Deserialize)]
 pub struct CheckResult {
@@ -16,7 +15,7 @@ pub struct CheckResult {
     #[serde(rename = "latencies")]
     pub latencies: HashMap<String, i64>,
     #[serde(rename = "updates")]
-    pub updates: Vec<Value>,
+    pub updates: Vec<UpdateItem>,
 }
 
 pub struct ConsistencyClient {
@@ -96,7 +95,7 @@ impl ConsistencyCheckBody {
             id: execution_id.to_string(),
             args: args,
             function: remote_endpoint.clone(),
-            consistency_rate: 1.0,
+            consistency_rate: -1.0,
         }
     }
 }

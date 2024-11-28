@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
-use aws_sdk_dynamodb::operation::execute_statement;
 use lambda_http::{lambda_runtime::Diagnostic, run, service_fn, tracing, Body, Error, Request, Response};
 use storage::Storage;
-use tokio::{join, sync::Mutex};
+use tokio::sync::Mutex;
 use wasmtime::*;
 use thiserror;
 use uuid::{self, Uuid};
@@ -60,7 +59,7 @@ impl From<WrapperError> for Diagnostic {
     }
 }
 
-async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<Response<Body>, Error> {
+async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D) -> Result<Response<Body>, Error> {
     
     println!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
@@ -126,19 +125,30 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: D) -> Result<
         Err(_) => panic!("REMOTE_ENDPOINT not set"),
     };
     let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
-    // Fire off another thread to handle the consistency check
-    match check_client.do_check(check_body).await {
+    let check_result = match check_client.do_check(check_body).await {
         Ok(res) => res,
         Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
     };
 
-    // Grab the writes the function made
-    let updates = wasm_handle.await.unwrap()?;
-    println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
 
-    match check_client.do_followup(exec_id,updates).await {
-        Ok(_) => println!("Followup sent successfully"),
-        Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
+    if check_result.check_result {
+        println!("Consistency check passed. Collect updates and forward.");
+        // Grab the writes the function made
+        let updates = wasm_handle.await.unwrap()?;
+        println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+
+        match check_client.do_followup(exec_id,updates).await {
+            Ok(_) => println!("Followup sent successfully"),
+            Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
+        }
+    } else {
+        println!("Consistency check failed. Syncing state and returning near data result");
+        if check_result.updates.len() == 0 {
+            println!("No updates to apply");
+        } else {
+            println!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
+            store.batch_update(&check_result.updates).await;
+        }
     }
 
     // let check_result = match check_handle.await {
@@ -205,6 +215,6 @@ async fn main() -> Result<(), Error> {
 
     
     run(service_fn(|event: Request| async {
-        entry_point(event, store.clone()).await
+        entry_point(event, &mut store.clone()).await
     })).await
 }

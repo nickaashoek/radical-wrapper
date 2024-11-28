@@ -2000,7 +2000,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2619,6 +2619,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-types",
+ "base64 0.22.1",
  "lambda_http",
  "reqwest",
  "serde",
