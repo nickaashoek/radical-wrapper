@@ -88,7 +88,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         Err(e) => return Err(WasmError::LinkerError(e.to_string()).into()),
     }
 
-    println!("Settingup the instance");
+    println!("Setting up the instance");
     // Setup an instance of the blob that we can use to run the function + guess
     let instance = match wasm_blob.setup_instance(serde_json::json!({
         "target-user": "user-1",
@@ -159,8 +159,13 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
                 store.batch_update(&check_result.updates).await;
             }
         }
+    } else {
+        let updates = wasm_handle.await.unwrap()?;
+        println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
     }
-    
+
+    println!("Done with function, returning back to user");
+
     let resp = Response::builder()
     .status(200)
     .header("Content-Type", "text/html")
