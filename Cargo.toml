@@ -18,8 +18,14 @@ uuid = { version = "1.11.0", features = ["v4", "fast-rng", "macro-diagnostics"] 
 aws-types = "1.3.3"
 base64 = "0.22.1"
 
-
 [package.metadata.lambda.env]
 CHECK_URL = "http://localhost:8000"
 REMOTE_URL = "http://localhost:9001"
 DEPLOYMENT = "datacenter"
+
+[package.metadata.lambda.deploy]
+memory = 1024                    # Function's memory
+timeout = 600                    # Function's execution timeout
+role = "arn:aws:iam::506625725958:role/Radical-Lambda"          # Function's execution role
+env_file = ".env.default"    # File to load environment variables from
+include = [ "function.wasm" ]       # Extra list of files to add to the zip bundle
