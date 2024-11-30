@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use wasmtime::*;
 use thiserror;
 use uuid::{self, Uuid};
+use std::time::Instant;
 
 mod storage;
 use storage::*;
@@ -71,6 +72,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     let body = _event.body().to_vec();
     let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
     let args = body_json["args"].clone();
+    let mut latencies: HashMap<String, u128> = HashMap::new();
     let mut exec_id = Uuid::new_v4();
     if !body_json["id"].is_null() {
         exec_id = Uuid::parse_str(body_json["id"].as_str().unwrap()).unwrap();
@@ -78,24 +80,38 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
 
     let check_client = ConsistencyClient::new(check_url.clone());
     
+    let wasm_setup_start = Instant::now();
     let mut config = Config::new();
     config.async_support(true);
-    let mut wasm_blob = WasmBlob::setup_blob(config, "function.wasm", store.clone());
+    let blob_start= Instant::now();
+    let (mut wasm_blob, read_time, setup_time) = WasmBlob::setup_blob(config, "function.serialized", store.clone());
+    latencies.insert("blob_read".to_string(), read_time.as_millis());
+    latencies.insert("blob_compile".to_string(), setup_time.as_millis());
+    let blob_load_duration = blob_start.elapsed();
+    latencies.insert("blob_load".to_string(), blob_load_duration.as_millis());
 
     // Setup the wasm blob to link the read/write functions
+    let blob_link_start = Instant::now();
     match wasm_blob.link_blob() {
         Ok(_) => println!("Wasm module linked successfully"),
         Err(e) => return Err(WasmError::LinkerError(e.to_string()).into()),
     }
+    let blob_link_duration = blob_link_start.elapsed();
+    latencies.insert("blob_link".to_string(), blob_link_duration.as_millis());
 
     println!("Setting up the instance");
     // Setup an instance of the blob that we can use to run the function + guess
+    let instant_setup_start = Instant::now();
     let instance = match wasm_blob.setup_instance(serde_json::json!({
         "target-user": "user-1",
     })).await {
         Ok(instance) => instance,
         Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
     };
+    let instant_setup_duration = instant_setup_start.elapsed();
+    latencies.insert("instance_setup".to_string(), instant_setup_duration.as_millis());
+    let wasm_setup_duration = wasm_setup_start.elapsed();
+    latencies.insert("wasm_setup".to_string(), wasm_setup_duration.as_millis());
 
     let mut key_set = KeySet {
         read_set: Vec::new(),
@@ -104,10 +120,13 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     if near_user {
         println!("Instance setup; going to guess the key");
         // Guess the key set so we can hand it to the consistency check
+        let key_guess_start = Instant::now();
         key_set = match wasm_blob.guess_key(instance).await {
             Ok(ks) => ks,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
         };
+        let key_guess_duration = key_guess_start.elapsed();
+        latencies.insert("key_guess".to_string(), key_guess_duration.as_millis());
         println!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
     }
 
@@ -116,6 +135,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
 
     // Run the wasm blob, this should be happening in parallel with the check
     let wasm_handle= tokio::spawn(async move {
+        let wasm_blob_start = Instant::now();
         wasm_blob.store.data_mut().reset_writes();
         let wasm_result = match wasm_blob.run_blob(instance).await {
             Ok(res) => res,
@@ -123,9 +143,12 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         };
         println!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
         let all_writes = wasm_blob.store.data().get_all_writes();
-        println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
-        Ok(all_writes)
+        // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
+        let wasm_blob_duration = wasm_blob_start.elapsed();
+        Ok((wasm_result, all_writes, wasm_blob_duration))
     });
+
+    let response: serde_json::Value;
 
     // Only do the consistency check if we're near the user
     if near_user {
@@ -133,43 +156,76 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             Ok(endpoint) => endpoint,
             Err(_) => panic!("REMOTE_ENDPOINT not set"),
         };
+        let check_start = Instant::now();
         let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
         println!("Sending consistency check request");
         let check_result = match check_client.do_check(check_body).await {
             Ok(res) => res,
             Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
         };
+        let check_duration = check_start.elapsed();
+        latencies.insert("consistency_check".to_string(), check_duration.as_millis());
 
         if check_result.check_result {
             println!("Consistency check passed. Collect updates and forward.");
             // Grab the writes the function made
-            let updates = wasm_handle.await.unwrap()?;
+            let (result, updates, duration) = wasm_handle.await.unwrap()?;
+            latencies.insert("wasm_execution".to_string(), duration.as_millis());
             println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
 
-            match check_client.do_followup(exec_id,updates).await {
-                Ok(_) => println!("Followup sent successfully"),
-                Err(_) => return Err(WrapperError::FollowupError("Failed to send followup".to_string()).into()),
-            }
+            // Spawn a thread to send the followup in the background
+            let followup_start = Instant::now();
+            tokio::spawn(async move {
+                match check_client.do_followup(exec_id, updates).await {
+                    Ok(_) => println!("Followup sent successfully"),
+                    Err(_) => println!("Failed to send followup"),
+                }
+            });
+            let followup_duration = followup_start.elapsed();
+            latencies.insert("followup".to_string(), followup_duration.as_millis());
+            response = serde_json::json!({
+                "result": result,
+                "latencies": latencies,
+            });
         } else {
             println!("Consistency check failed. Syncing state and returning near data result");
             if check_result.updates.len() == 0 {
                 println!("No updates to apply");
             } else {
                 println!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
+                let update_start = Instant::now();
                 store.batch_update(&check_result.updates).await;
+                let update_duration = update_start.elapsed();
+                latencies.insert("update_state".to_string(), update_duration.as_millis());
             }
+            response = serde_json::json!({
+                "result": check_result.result,
+                "latencies": latencies,
+                "remote_latencies": check_result.latencies,
+            });
         }
     } else {
-        let updates = wasm_handle.await.unwrap()?;
+        let (result, _, duration) = wasm_handle.await.unwrap()?;
+        let collect_updates_start = Instant::now();
+        let updates = store.get_all_writes();
+        let collect_updates_duration = collect_updates_start.elapsed();
+        latencies.insert("wasm_execution".to_string(), duration.as_millis());
+        latencies.insert("collect_updates".to_string(), collect_updates_duration.as_millis());
         println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+        response = serde_json::json!({
+            "result": result,
+            "updates": updates,
+            "latencies": latencies,
+        });
     }
 
     println!("Done with function, returning back to user");
 
+
     let resp = Response::builder()
     .status(200)
-    .header("Content-Type", "text/html")
-    .body("Hello, world!".into())
+    .header("Content-Type", "application/json")
+    .body(response.to_string().into())
     .map_err(Box::new)?;
     Ok(resp)
 }
@@ -182,7 +238,7 @@ async fn main() -> Result<(), Error> {
         Err(_) => panic!("DEPLOYMENT not set"),
     };
 
-    let mut near_user = true;
+    let near_user: bool;
 
     // Set up the store for the wasm function to use
     let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();

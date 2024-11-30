@@ -130,7 +130,7 @@ impl ConsistencyClient {
     }
 
     pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
-        let res = self.client.post(self.followup_endpoint())
+        self.client.post(self.followup_endpoint())
             .json(&serde_json::json!({
                 "Updates": writes,
                 "Id": id.to_string()
@@ -138,10 +138,6 @@ impl ConsistencyClient {
             .send()
             .await
             .unwrap();
-
-        let resp_json: Value = res.json().await.unwrap();
-
-        println!("Reponse json: {:?}", resp_json);   
         Ok(())
     }
 }

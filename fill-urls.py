@@ -40,11 +40,20 @@ if __name__ == "__main__":
     parser.add_argument("--data-region", dest="data_region", type=str, help="Near data region where function exists")
     parser.add_argument("--function", dest="func_name", type=str, help="Function name to setup")
     parser.add_argument("--user-env", dest="user_env", default=".env.user", type=str, help="User environment file")
+    parser.add_argument("--data-env", dest="data_env", default=".env.data", type=str, help="Data environment file")
+    parser.add_argument("--deploy", dest="deploy", action="store_true", default=False, help="just deploy the function function")
+    parser.add_argument("--build", dest="build", action="store_true", default=False, help="build the function as well")
     args = parser.parse_args()
     
-    data_url = fetch_url(args.data_region, args.func_name)
-    check_url = get_check_url(args.data_region)
-    print(data_url, check_url)
+    if args.build:
+        command = subprocess.run(["cargo", "lambda", "build", "--release", "--arm64"])
     
-    update_urls(args.user_env, check_url, data_url)
+    if not args.deploy:
+        data_url = fetch_url(args.data_region, args.func_name)
+        check_url = get_check_url(args.data_region)
+        print(data_url, check_url)
+        
+        update_urls(args.user_env, check_url, data_url)
+
     deploy_function(args.user_region, args.user_env)
+    deploy_function(args.data_region, args.data_env)

@@ -1,6 +1,9 @@
+use std::io::Read;
+
 use wasmtime::*;
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
+use std::time::{Duration, Instant};
 // use tokio::time::{sleep, Duration};
 
 use super::storage::{Storage, KeySet};
@@ -45,19 +48,31 @@ pub struct WasmBlob<D: Storage> {
 
 
 impl<D: Storage> WasmBlob<D> {
-    pub fn setup_blob(config: Config, path: &str, external_store: D) -> Self {
+    pub fn setup_blob(config: Config, path: &str, external_store: D) -> (Self, Duration, Duration) {
         let engine = Engine::new(&config).unwrap();
-        let module = wasmtime::Module::from_file(&engine, path).unwrap();
+        let read_start = Instant::now();
+        let mut wasm_file = std::fs::File::open(path).unwrap();
+        let read_duration = read_start.elapsed();
+        let mut buf = Vec::new();
+        wasm_file.read_to_end(&mut buf).unwrap();
+        let setup_start = Instant::now();
+        // This has to be unsafe. Could allow for ACE if we aren't careful, but the blobs should always come from the user
+        // Worth thinking about this a little for future work on security side
+        let module = unsafe {
+            wasmtime::Module::deserialize(&engine, &buf).unwrap()
+        };
+        let setup_duration = setup_start.elapsed();
+
         let linker = Linker::new(&engine);
         let state = MyState {
             external_store: external_store.clone(),
         };
         let store = Store::new(&engine, state);
-        Self {
+        (Self {
             store,
             module,
             linker,
-        }
+        }, read_duration, setup_duration)
     }
 
     pub fn link_blob(&mut self) -> wasmtime::Result<()> {
