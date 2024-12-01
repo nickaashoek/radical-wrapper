@@ -26,6 +26,5 @@ REMOTE_URL = "https://r3e4tdhdvlpbsjcwvxnqe4f7ia0dyyjd.lambda-url.eu-west-3.on.a
 DEPLOYMENT = "edge"
 
 [package.metadata.lambda.deploy]
-memory = 1024                    # Function's memory
+memory = 2048                    # Function's memory
 timeout = 600                    # Function's execution timeout
-include = [ "function.serialized" ]       # Extra list of files to add to the zip bundle
