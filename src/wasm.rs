@@ -156,6 +156,7 @@ impl<D: Storage> WasmBlob<D> {
 
         // Fetch and return the result
         let result_slice = read_result_from_wasm(&memory, &self.store, 0)?;
+        println!("Result slice: {:?}", String::from_utf8(result_slice.clone()));
         let result_obj = serde_json::from_slice::<WasmResult>(&result_slice).unwrap();
         Ok(result_obj)
     }

@@ -60,9 +60,9 @@ if __name__ == "__main__":
     if not exists:
         print(f"Function {args.func_name} not found in one of {args.user_region} or {args.data_region}. Deploy first, then fill in.")
         # We must deploy first to figure out the proper URLs
-        # So just upload with blank envs
-        deploy_function(args.user_region, "", args.func_name, args.wasm_blob)
-        deploy_function(args.data_region, "", args.func_name, args.wasm_blob)
+        # So just upload with "blank" envs (actual blank envs throw an error)
+        deploy_function(args.user_region, "TEST_ENV=dummy", args.func_name, args.wasm_blob)
+        deploy_function(args.data_region, "TEST_ENV=dummy", args.func_name, args.wasm_blob)
         exists = True
     else:
         print(f"Function {args.func_name} found in {args.user_region}. Checking URLs and then maybe updating.")
