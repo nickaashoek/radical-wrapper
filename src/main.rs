@@ -62,13 +62,13 @@ impl From<WrapperError> for Diagnostic {
 
 async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool) -> Result<Response<Body>, Error> {
     
-    println!("Entering into the function");
+    tracing::info!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
         Ok(url) => url,
         Err(_) => panic!("CHECK_URL not set"),
     };
 
-    println!("Getting the body json from the request to the function");
+    tracing::info!("Getting the body json from the request to the function");
     let body = _event.body().to_vec();
     let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
     let args = body_json["args"].clone();
@@ -99,12 +99,13 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     let blob_link_duration = blob_link_start.elapsed();
     latencies.insert("blob_link".to_string(), blob_link_duration.as_millis());
 
-    println!("Setting up the instance");
+    tracing::info!("Setting up the instance");
     // Setup an instance of the blob that we can use to run the function + guess
     let instant_setup_start = Instant::now();
-    let instance = match wasm_blob.setup_instance(serde_json::json!({
-        "target-user": "user-1",
-    })).await {
+    tracing::info!("Setting up wasm blob with args: {}", serde_json::to_string_pretty(&args).unwrap());
+    let args_vec = serde_json::to_vec(&args).unwrap();
+    let arg_len = args_vec.len() as i32;
+    let instance = match wasm_blob.setup_instance(args_vec).await {
         Ok(instance) => instance,
         Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
     };
@@ -137,7 +138,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     let wasm_handle= tokio::spawn(async move {
         let wasm_blob_start = Instant::now();
         wasm_blob.store.data_mut().reset_writes();
-        let wasm_result = match wasm_blob.run_blob(instance).await {
+        let wasm_result = match wasm_blob.run_blob(instance, arg_len).await {
             Ok(res) => res,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string())),
         };

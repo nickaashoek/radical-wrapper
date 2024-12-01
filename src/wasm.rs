@@ -135,16 +135,15 @@ impl<D: Storage> WasmBlob<D> {
         Ok(())
     }
 
-    pub async fn setup_instance(&mut self, args: Value) -> wasmtime::Result<wasmtime::Instance> {
-        let args_vec = serde_json::to_vec(&args).unwrap();
+    pub async fn setup_instance(&mut self, args: Vec<u8>) -> wasmtime::Result<wasmtime::Instance> {
         let instance = self.linker.instantiate_async(&mut self.store, &self.module).await?;
 
         let memory = instance.get_memory(&mut self.store, "memory").unwrap();
-        memory.write(&mut self.store, 8, &args_vec)?;
+        memory.write(&mut self.store, 8, &args)?;
         Ok(instance)
     }
 
-    pub async fn run_blob(&mut self, instance: wasmtime::Instance) -> wasmtime::Result<WasmResult> {
+    pub async fn run_blob(&mut self, instance: wasmtime::Instance, args_len: i32) -> wasmtime::Result<WasmResult> {
         // Reset the writes before running the blob
         self.store.data_mut().reset_writes();
 
@@ -152,7 +151,7 @@ impl<D: Storage> WasmBlob<D> {
         let memory = instance.get_memory(&mut self.store, "memory").unwrap();
         let entry = instance.get_typed_func::<(i32, i32, i32), ()>(&mut self.store, "entry")?;
         // Can now call the function
-        entry.call_async(&mut self.store, (0, 8, vec!["user-1"].len() as i32)).await?;
+        entry.call_async(&mut self.store, (0, 8, args_len)).await?;
 
         // Fetch and return the result
         let result_slice = read_result_from_wasm(&memory, &self.store, 0)?;
