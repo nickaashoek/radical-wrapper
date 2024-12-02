@@ -102,7 +102,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     tracing::info!("Setting up the instance");
     // Setup an instance of the blob that we can use to run the function + guess
     let instant_setup_start = Instant::now();
-    tracing::info!("Setting up wasm blob with args: {}", serde_json::to_string_pretty(&args).unwrap());
+    tracing::info!("Setting up wasm blob with args: {}", serde_json::to_string(&args).unwrap());
     let args_vec = serde_json::to_vec(&args).unwrap();
     let arg_len = args_vec.len() as i32;
     let instance = match wasm_blob.setup_instance(args_vec).await {
@@ -131,7 +131,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
 
         let key_guess_duration = key_guess_start.elapsed();
         latencies.insert("key_guess".to_string(), key_guess_duration.as_millis());
-        tracing::info!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
+        tracing::info!("Key set contains {} read keys and {} write keys", key_set.read_set.len(), key_set.write_set.len());
     }
 
 
@@ -202,6 +202,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             response = serde_json::json!({
                 "result": result,
                 "latencies": latencies,
+                "remote_latencies": check_result.latencies,
             });
         } else {
             tracing::info!("Consistency check failed. Syncing state and returning near data result");
