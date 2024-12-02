@@ -147,7 +147,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             Ok(res) => res,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string())),
         };
-        tracing::info!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
+        tracing::info!("Result of wasm execution: {}", serde_json::to_string(&wasm_result).unwrap());
         let all_writes = wasm_blob.store.data().get_all_writes();
         // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
         let wasm_blob_duration = wasm_blob_start.elapsed();
@@ -209,7 +209,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             if check_result.updates.len() == 0 {
                 tracing::info!("No updates to apply");
             } else {
-                tracing::info!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
+                tracing::info!("Should apply {} updates", check_result.updates.len());
                 let update_start = Instant::now();
                 store.batch_update(&check_result.updates).await;
                 let update_duration = update_start.elapsed();
@@ -230,7 +230,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         let collect_updates_duration = collect_updates_start.elapsed();
         latencies.insert("wasm_execution".to_string(), duration.as_millis());
         latencies.insert("collect_updates".to_string(), collect_updates_duration.as_millis());
-        tracing::info!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+        tracing::info!("Made {} updates", updates.len());
         let e2e_end = e2e_start.elapsed();
         latencies.insert("e2e".to_string(), e2e_end.as_millis());
         response = serde_json::json!({
