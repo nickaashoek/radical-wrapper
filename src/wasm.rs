@@ -4,6 +4,7 @@ use wasmtime::*;
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, Instant};
+use lambda_http::tracing;
 // use tokio::time::{sleep, Duration};
 
 use super::storage::{Storage, KeySet};
@@ -160,12 +161,12 @@ impl<D: Storage> WasmBlob<D> {
         Ok(result_obj)
     }
 
-    pub async fn guess_key(&mut self, instance: wasmtime::Instance) -> wasmtime::Result<KeySet> {
+    pub async fn guess_key(&mut self, instance: wasmtime::Instance, arg_len: i32) -> wasmtime::Result<KeySet> {
         let memory = instance.get_memory(&mut self.store, "memory").unwrap();
         let entry = instance.get_typed_func::<(i32, i32, i32), ()>(&mut self.store, "key_guess")?;
-        entry.call_async(&mut self.store, (0, 8, vec!["user-1"].len() as i32)).await?;
+        entry.call_async(&mut self.store, (0, 8, arg_len)).await?;
         let result_slice = read_result_from_wasm(&memory, &self.store, 0)?;
-
+        tracing::info!("Result slice: {:?}", String::from_utf8(result_slice.clone()));
         let result_obj = serde_json::from_slice::<KeySet>(&result_slice).unwrap();
         Ok(result_obj)
     }

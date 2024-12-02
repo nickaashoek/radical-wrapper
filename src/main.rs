@@ -61,7 +61,7 @@ impl From<WrapperError> for Diagnostic {
 }
 
 async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool) -> Result<Response<Body>, Error> {
-    
+    let e2e_start = Instant::now();
     tracing::info!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
         Ok(url) => url,
@@ -93,7 +93,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     // Setup the wasm blob to link the read/write functions
     let blob_link_start = Instant::now();
     match wasm_blob.link_blob() {
-        Ok(_) => println!("Wasm module linked successfully"),
+        Ok(_) => tracing::info!("Wasm module linked successfully"),
         Err(e) => return Err(WasmError::LinkerError(e.to_string()).into()),
     }
     let blob_link_duration = blob_link_start.elapsed();
@@ -118,21 +118,26 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         read_set: Vec::new(),
         write_set: Vec::new(),
     };
+
     if near_user {
-        println!("Instance setup; going to guess the key");
+        tracing::info!("Instance setup; going to guess the key");
         // Guess the key set so we can hand it to the consistency check
         let key_guess_start = Instant::now();
-        key_set = match wasm_blob.guess_key(instance).await {
+
+        key_set = match wasm_blob.guess_key(instance, arg_len).await {
             Ok(ks) => ks,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
         };
+
         let key_guess_duration = key_guess_start.elapsed();
         latencies.insert("key_guess".to_string(), key_guess_duration.as_millis());
-        println!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
+        tracing::info!("Key set: {}", serde_json::to_string_pretty(&key_set).unwrap());
     }
 
 
     let check_store = store.clone();
+
+    let split_start = Instant::now();
 
     // Run the wasm blob, this should be happening in parallel with the check
     let wasm_handle= tokio::spawn(async move {
@@ -142,7 +147,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             Ok(res) => res,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string())),
         };
-        println!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
+        tracing::info!("Result of wasm execution: {}", serde_json::to_string_pretty(&wasm_result).unwrap());
         let all_writes = wasm_blob.store.data().get_all_writes();
         // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
         let wasm_blob_duration = wasm_blob_start.elapsed();
@@ -159,46 +164,58 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         };
         let check_start = Instant::now();
         let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
-        println!("Sending consistency check request");
+        tracing::info!("Sending consistency check request");
         let check_result = match check_client.do_check(check_body).await {
             Ok(res) => res,
             Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
         };
+
         let check_duration = check_start.elapsed();
+        let (result, updates, duration) = wasm_handle.await.unwrap()?;
+        let split_end = split_start.elapsed();
+        latencies.insert("split".to_string(), split_end.as_millis());
+
         latencies.insert("consistency_check".to_string(), check_duration.as_millis());
 
         if check_result.check_result {
-            println!("Consistency check passed. Collect updates and forward.");
+            tracing::info!("Consistency check passed. Collect updates and forward.");
             // Grab the writes the function made
-            let (result, updates, duration) = wasm_handle.await.unwrap()?;
             latencies.insert("wasm_execution".to_string(), duration.as_millis());
-            println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
 
             // Spawn a thread to send the followup in the background
             let followup_start = Instant::now();
-            tokio::spawn(async move {
-                match check_client.do_followup(exec_id, updates).await {
-                    Ok(_) => println!("Followup sent successfully"),
-                    Err(_) => println!("Failed to send followup"),
-                }
-            });
+            if updates.len() == 0 {
+                tracing::info!("No updates to apply");
+            } else {
+                tracing::info!("Sending over {} updates", updates.len());
+                tokio::spawn(async move {
+                    match check_client.do_followup(exec_id, updates).await {
+                        Ok(_) => tracing::info!("Followup sent successfully"),
+                        Err(_) => tracing::info!("Failed to send followup"),
+                    }
+                });
+            }
             let followup_duration = followup_start.elapsed();
             latencies.insert("followup".to_string(), followup_duration.as_millis());
+            let e2e_end = e2e_start.elapsed();
+            latencies.insert("e2e".to_string(), e2e_end.as_millis());
             response = serde_json::json!({
                 "result": result,
                 "latencies": latencies,
             });
         } else {
-            println!("Consistency check failed. Syncing state and returning near data result");
+            tracing::info!("Consistency check failed. Syncing state and returning near data result");
             if check_result.updates.len() == 0 {
-                println!("No updates to apply");
+                tracing::info!("No updates to apply");
             } else {
-                println!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
+                tracing::info!("Updates to apply: {}", serde_json::to_string_pretty(&check_result.updates).unwrap());
                 let update_start = Instant::now();
                 store.batch_update(&check_result.updates).await;
                 let update_duration = update_start.elapsed();
                 latencies.insert("update_state".to_string(), update_duration.as_millis());
             }
+            let e2e_end = e2e_start.elapsed();
+            latencies.insert("e2e".to_string(), e2e_end.as_millis());
             response = serde_json::json!({
                 "result": check_result.result,
                 "latencies": latencies,
@@ -212,7 +229,9 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         let collect_updates_duration = collect_updates_start.elapsed();
         latencies.insert("wasm_execution".to_string(), duration.as_millis());
         latencies.insert("collect_updates".to_string(), collect_updates_duration.as_millis());
-        println!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+        tracing::info!("Updates: {}", serde_json::to_string_pretty(&updates).unwrap());
+        let e2e_end = e2e_start.elapsed();
+        latencies.insert("e2e".to_string(), e2e_end.as_millis());
         response = serde_json::json!({
             "result": result,
             "updates": updates,
@@ -220,7 +239,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         });
     }
 
-    println!("Done with function, returning back to user");
+    tracing::info!("Done with function, returning back to user");
 
 
     let resp = Response::builder()
@@ -272,11 +291,6 @@ async fn main() -> Result<(), Error> {
                 all_writes: Vec::new(),
                 // table_partition: None,
             });
-
-            // for (i, _) in dummy_data.iter().enumerate() {
-            //     let (version, _) = store.get("radical_testing".into(), &format!("user-{}", i).into()).await.unwrap();
-            //     println!("Version for key user-{}: {}", i, version);
-            // }
 
             store
         },

@@ -1,5 +1,6 @@
 use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest};
 use aws_sdk_dynamodb::primitives::Blob;
+use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{hash_map::Entry, HashMap}, sync::Arc};
@@ -219,14 +220,14 @@ impl Storage for DynamoStore {
         let mut input_items = Vec::<WriteRequest>::new();
 
         for item in     table_key_pairs {
-            println!("Setting up put request for item {} {:?}", String::from_utf8(item.key.clone()).unwrap(), item.key.clone());
+            tracing::info!("Setting up put request for item {} {:?}", String::from_utf8(item.key.clone()).unwrap(), item.key.clone());
             let put_request =  PutRequest::builder()
                     .item("id", AttributeValue::B(Blob::new(item.key.clone())))
                     .item("object_value", AttributeValue::B(Blob::new(item.value.clone())))
                     .item("version", AttributeValue::N(item.version.to_string()))
                     .build()
                     .unwrap();
-            println!("Setup put request for item {:?}", put_request.item());
+            tracing::info!("Setup put request for item {:?}", put_request.item());
             let write_request = WriteRequest::builder()
                 .put_request(put_request)
                 .build();
