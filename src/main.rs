@@ -203,6 +203,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
                 "result": result,
                 "latencies": latencies,
                 "remote_latencies": check_result.latencies,
+                "check_status": true,
             });
         } else {
             tracing::info!("Consistency check failed. Syncing state and returning near data result");
@@ -221,6 +222,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
                 "result": check_result.result,
                 "latencies": latencies,
                 "remote_latencies": check_result.latencies,
+                "check_status": false,
             });
         }
     } else {

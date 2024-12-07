@@ -142,6 +142,7 @@ impl Storage for DynamoStore {
     }
 
     async fn get(&self, table: String, key: &Vec<u8>) -> Option<(i64, Vec<u8>)> {
+        tracing::info!("Going to get item from table {} with key {}", table, String::from_utf8(key.clone()).unwrap());
         let result = self.client
             .get_item()
             .table_name(table)
@@ -150,7 +151,9 @@ impl Storage for DynamoStore {
             .await
             .expect("failed to get_item");
 
+
         result.item().and_then(|item| {
+            tracing::info!("Got item {:?}", item);
             let version = item.get("version")?.as_n().ok()?.parse::<i64>().ok()?;
             let value = item.get("object_value")?.as_b().ok()?.clone().into_inner();
             Some((version, value))
