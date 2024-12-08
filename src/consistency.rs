@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use lambda_http::tracing;
 use reqwest::Client;
 use serde_json::Value;
 use uuid::Uuid;
@@ -18,6 +19,7 @@ pub struct CheckResult {
     pub updates: Vec<UpdateItem>,
 }
 
+#[derive(Clone)]
 pub struct ConsistencyClient {
     client: Client,
     url: String
@@ -69,7 +71,10 @@ impl ConsistencyCheckBody {
             track_writes.insert(key);
         }
 
+        let batch_start = std::time::Instant::now();
         let items = external_store.batch_get(&table_key_pairs).await;
+        let batch_duration = batch_start.elapsed();
+        tracing::info!("Batch get duration: {:?}", batch_duration);
         for (table, key, version_value) in items {
             let mut version = -1;
             if let Some((v, _)) = version_value {
@@ -130,11 +135,13 @@ impl ConsistencyClient {
     }
 
     pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
+        let follow_up = serde_json::json!({
+            "Updates": writes,
+            "Id": id.to_string()
+        });
+        tracing::info!("Follow up: {:?} to {}", follow_up, self.followup_endpoint());
         self.client.post(self.followup_endpoint())
-            .json(&serde_json::json!({
-                "Updates": writes,
-                "Id": id.to_string()
-            }))
+            .json(&follow_up)
             .send()
             .await
             .unwrap();
