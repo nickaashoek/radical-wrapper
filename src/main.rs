@@ -138,44 +138,68 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     let check_store = store.clone();
 
     let split_start = Instant::now();
-
-    // Run the wasm blob, this should be happening in parallel with the check
-    let wasm_handle= tokio::spawn(async move {
-        let wasm_blob_start = Instant::now();
-        wasm_blob.store.data_mut().reset_writes();
-        let wasm_result = match wasm_blob.run_blob(instance, arg_len).await {
-            Ok(res) => res,
-            Err(e) => return Err(WasmError::WasmExecError(e.to_string())),
-        };
-        tracing::info!("Result of wasm execution: {}", serde_json::to_string(&wasm_result).unwrap());
-        let all_writes = wasm_blob.store.data().get_all_writes();
-        // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
-        let wasm_blob_duration = wasm_blob_start.elapsed();
-        Ok((wasm_result, all_writes, wasm_blob_duration))
-    });
-
-    let response: serde_json::Value;
-
-    // Only do the consistency check if we're near the user
+    let consistency_handle;
+    let check_start = Instant::now();
     if near_user {
         let remote_endpoint = match std::env::var("REMOTE_URL") {
             Ok(endpoint) => endpoint,
             Err(_) => panic!("REMOTE_ENDPOINT not set"),
         };
-        let check_start = Instant::now();
         let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
+        let spawn_start = Instant::now();
         tracing::info!("Sending consistency check request");
-        let check_result = match check_client.do_check(check_body).await {
-            Ok(res) => res,
-            Err(_) => return Err(WrapperError::CheckError("Consistency check failed".to_string()).into()),
-        };
+        consistency_handle = tokio::spawn(async move {
+            let check_start = Instant::now();
+            match check_client.do_check(check_body).await {
+                Ok(res) => {
+                    let check_duration = check_start.elapsed();
+                    Ok((res, check_duration))
+                },
+                Err(e) => Err(e),
+            }
+        });
+        let spawn_end = Instant::now();
+        latencies.insert("spawn_check".to_string(), spawn_end.duration_since(spawn_start).as_millis());
+    } else {
+        consistency_handle = tokio::spawn(async move {
+            Ok((CheckResult {
+                check_result: false,
+                result: serde_json::Value::Null,
+                updates: Vec::new(),
+                latencies: HashMap::new(),
+            }, Instant::now().duration_since(check_start)))
+        });
+    }
 
-        let check_duration = check_start.elapsed();
-        let (result, updates, duration) = wasm_handle.await.unwrap()?;
+    // Run the wasm blob, this should be happening in parallel with the check
+    wasm_blob.store.data_mut().reset_writes();
+    // let wasm_handle = tokio::spawn(wasm_blob.run_blob(instance, arg_len));
+    let wasm_blob_start = Instant::now();
+    wasm_blob.store.data_mut().reset_writes();
+    let wasm_result = match wasm_blob.run_blob(instance, arg_len).await {
+        Ok(res) => res,
+        Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
+    };
+    tracing::info!("Result of wasm execution: {}", serde_json::to_string(&wasm_result).unwrap());
+    let updates = wasm_blob.store.data().get_all_writes();
+    // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
+    let wasm_blob_duration = wasm_blob_start.elapsed();
+
+    let response: serde_json::Value;
+
+    // Only do the consistency check if we're near the user
+    if near_user {
+        let check_wait_start = Instant::now();
+        let (check_result, check_duration) = match consistency_handle.await.unwrap() {
+            Ok(res) => res,
+            Err(_) => return Err(WrapperError::CheckError("Consistency Check error".to_string()).into()),
+        };
+        latencies.insert("consistency_check".to_string(), check_duration.as_millis());
+        let check_wait_duration = check_wait_start.elapsed();
+        latencies.insert("check_wait".to_string(), check_wait_duration.as_millis());
         let split_end = split_start.elapsed();
         latencies.insert("split".to_string(), split_end.as_millis());
-        latencies.insert("wasm_execution".to_string(), duration.as_millis());
-        latencies.insert("consistency_check".to_string(), check_duration.as_millis());
+        latencies.insert("wasm_execution".to_string(), wasm_blob_duration.as_millis());
 
         if check_result.check_result {
             tracing::info!("Consistency check passed. Collect updates and forward.");
@@ -186,6 +210,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             } else {
                 tracing::info!("Sending over {} updates", updates.len());
                 tokio::spawn(async move {
+                    let check_client = ConsistencyClient::new(check_url.clone());
                     match check_client.do_followup(exec_id, updates).await {
                         Ok(_) => tracing::info!("Followup sent successfully"),
                         Err(_) => tracing::info!("Failed to send followup"),
@@ -197,7 +222,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             let e2e_end = e2e_start.elapsed();
             latencies.insert("e2e".to_string(), e2e_end.as_millis());
             response = serde_json::json!({
-                "result": result,
+                "result": wasm_result,
                 "latencies": latencies,
                 "remote_latencies": check_result.latencies,
                 "check_status": true,
@@ -223,17 +248,16 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             });
         }
     } else {
-        let (result, _, duration) = wasm_handle.await.unwrap()?;
         let collect_updates_start = Instant::now();
         let updates = store.get_all_writes();
         let collect_updates_duration = collect_updates_start.elapsed();
-        latencies.insert("wasm_execution".to_string(), duration.as_millis());
+        latencies.insert("wasm_execution".to_string(), wasm_blob_duration.as_millis());
         latencies.insert("collect_updates".to_string(), collect_updates_duration.as_millis());
         tracing::info!("Made {} updates", updates.len());
         let e2e_end = e2e_start.elapsed();
         latencies.insert("e2e".to_string(), e2e_end.as_millis());
         response = serde_json::json!({
-            "result": result,
+            "result": wasm_result,
             "updates": updates,
             "latencies": latencies,
         });
