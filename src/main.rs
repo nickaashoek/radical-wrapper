@@ -174,14 +174,11 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         let (result, updates, duration) = wasm_handle.await.unwrap()?;
         let split_end = split_start.elapsed();
         latencies.insert("split".to_string(), split_end.as_millis());
-
+        latencies.insert("wasm_execution".to_string(), duration.as_millis());
         latencies.insert("consistency_check".to_string(), check_duration.as_millis());
 
         if check_result.check_result {
             tracing::info!("Consistency check passed. Collect updates and forward.");
-            // Grab the writes the function made
-            latencies.insert("wasm_execution".to_string(), duration.as_millis());
-
             // Spawn a thread to send the followup in the background
             let followup_start = Instant::now();
             if updates.len() == 0 {
