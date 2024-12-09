@@ -25,7 +25,7 @@ pub struct ConsistencyClient {
     url: String
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct KeyInfo {
     pub table: String,
     pub key: Vec<u8>,
@@ -106,9 +106,9 @@ impl ConsistencyCheckBody {
 }
 
 impl ConsistencyClient {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, client: Client) -> Self {
         Self {
-            client: Client::new(),
+            client: client,
             url: url.clone()
         }
     }

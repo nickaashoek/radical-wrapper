@@ -60,7 +60,7 @@ impl From<WrapperError> for Diagnostic {
     }
 }
 
-async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool) -> Result<Response<Body>, Error> {
+async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool, client: reqwest::Client) -> Result<Response<Body>, Error> {
     let e2e_start = Instant::now();
     tracing::info!("Entering into the function");
     let check_url = match std::env::var("CHECK_URL") {
@@ -78,7 +78,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         exec_id = Uuid::parse_str(body_json["id"].as_str().unwrap()).unwrap();
     }
 
-    let check_client = ConsistencyClient::new(check_url.clone());
+    let check_client = ConsistencyClient::new(check_url.clone(), client);
     
     let wasm_setup_start = Instant::now();
     let mut config = Config::new();
@@ -149,10 +149,23 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
         let spawn_start = Instant::now();
         tracing::info!("Sending consistency check request");
         consistency_handle = tokio::spawn(async move {
+            // let second_check = ConsistencyCheckBody {
+            //     read_keys: check_body.read_keys.clone(),
+            //     write_keys: check_body.write_keys.clone(),
+            //     id: check_body.id.clone(),
+            //     args: check_body.args.clone(),
+            //     function: check_body.function.clone(),
+            //     consistency_rate: check_body.consistency_rate,
+            // };
+            // let second_check_start = Instant::now();
+            // _ = check_client.do_check(second_check).await;
+            // let second_check_duration = second_check_start.elapsed();
+            // tracing::info!("Second check duration: {:?}", second_check_duration);
             let check_start = Instant::now();
             match check_client.do_check(check_body).await {
                 Ok(res) => {
                     let check_duration = check_start.elapsed();
+                    tracing::info!("Check duration: {:?}", check_duration);
                     Ok((res, check_duration))
                 },
                 Err(e) => Err(e),
@@ -210,7 +223,8 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
             } else {
                 tracing::info!("Sending over {} updates", updates.len());
                 tokio::spawn(async move {
-                    let check_client = ConsistencyClient::new(check_url.clone());
+                    let client = reqwest::Client::new();
+                    let check_client = ConsistencyClient::new(check_url.clone(), client);
                     match check_client.do_followup(exec_id, updates).await {
                         Ok(_) => tracing::info!("Followup sent successfully"),
                         Err(_) => tracing::info!("Failed to send followup"),
@@ -283,6 +297,7 @@ async fn main() -> Result<(), Error> {
     };
 
     let near_user: bool;
+    let client = reqwest::Client::new();
 
     // Set up the store for the wasm function to use
     let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
@@ -339,6 +354,6 @@ async fn main() -> Result<(), Error> {
 
     
     run(service_fn(|event: Request| async {
-        entry_point(event, &mut store.clone(), near_user).await
+        entry_point(event, &mut store.clone(), near_user, client.clone()).await
     })).await
 }
