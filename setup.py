@@ -45,14 +45,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--user-region", dest="user_region", type=str, help="Near user region to setup")
     parser.add_argument("--data-region", dest="data_region", type=str, help="Near data region to setup")
+    parser.add_argument("--use-scylla", dest="use_scylla", action="store_true", help="Whether to use scylla for the user region", default=False)
+    parser.add_argument("--user-scylla-addr", dest="scylla_addr", type=str, help="the address of the scylla instance", required=False)
+    parser.add_argument("--user-scylla-port", dest="scylla_port", type=str, help="the port of the scylla instance", required=False)
     args = parser.parse_args()
-    
+
     user_region, data_region = args.user_region, args.data_region
     print(f"Setting up AWS region pair: {user_region} (user) and {data_region} (data)")
-    
-    user_client = boto3.client('dynamodb', region_name=user_region)
+
+
     data_client = boto3.client('dynamodb', region_name=data_region)
-    
+    user_client = None
+    if args.use_scylla:
+        if not (args.scylla_addr and args.scylla_port):
+            print("ERROR: when using scylla, both port and address must be specified")
+        scylla_ep = f"{args.scylla_addr}:{args.scylla_port}"
+        user_client = boto3.client('dynamodb', endpoint_url=scylla_ep, region_name="None", aws_access_key_id="None", aws_secret_access_key="None")
+    else:
+        user_client = boto3.client('dynamodb', region_name=user_region)
+
     user_pages = user_client.get_paginator('list_tables')
     data_pages = data_client.get_paginator('list_tables')
     user_tables = set()
@@ -61,17 +72,20 @@ if __name__ == "__main__":
     for page in user_pages.paginate():
         for table in page.get('TableNames', []):
             user_tables.add(table)
-    
+
     for page in data_pages.paginate():
         for table in page.get('TableNames', []):
             data_tables.add(table)
-    
+
     print("User region {} tables: {}".format(user_region, user_tables))
     print("Data region {} tables: {}".format(data_region, data_tables))
     if WRITE_TABLE not in data_tables:
+        print("Setting up intent table in", args.data_region)
         setup_intent_table(data_client)
     if RADICAL_TABLE not in data_tables:
+        print("Setting up radical table in", args.data_region)
         setup_item_table(data_client)
     if RADICAL_TABLE not in user_tables:
+        print("Setting up item table in user region")
         setup_item_table(user_client)
-    
+
