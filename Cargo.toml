@@ -23,7 +23,9 @@ base64 = "0.22.1"
 [package.metadata.lambda.env]
 CHECK_URL = "http://localhost:8000"
 REMOTE_URL = "https://r3e4tdhdvlpbsjcwvxnqe4f7ia0dyyjd.lambda-url.eu-west-3.on.aws/"
-DEPLOYMENT = "edge"
+DEPLOYMENT = "datacenter"
+USE_SCYLLA = "true"
+SCYLLA_EP = "http://localhost:8192"
 
 [package.metadata.lambda.deploy]
 memory = 2048                    # Function's memory

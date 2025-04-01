@@ -1,8 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use lambda_http::{lambda_runtime::Diagnostic, run, service_fn, tracing, Body, Error, Request, Response};
 use storage::Storage;
-use tokio::sync::Mutex;
 use wasmtime::*;
 use thiserror;
 use uuid::{self, Uuid};
@@ -79,7 +78,7 @@ async fn entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_
     }
 
     let check_client = ConsistencyClient::new(check_url.clone(), client);
-    
+
     let wasm_setup_start = Instant::now();
     let mut config = Config::new();
     config.async_support(true);
@@ -296,63 +295,54 @@ async fn main() -> Result<(), Error> {
         Err(_) => panic!("DEPLOYMENT not set"),
     };
 
-    let near_user: bool;
+    let use_scylla = match std::env::var("USE_SCYLLA") {
+        Ok(_) => true,
+        Err(_) => false
+    };
+
+    if use_scylla {
+        tracing::info!("Using scylla as the dynamo backend through the alternator")
+    }
+
+    let near_user = match deployment_env.as_str() {
+        "edge" => true,
+        "datacenter" => false,
+        _ => panic!("unknown deployment env")
+    };
     let client = reqwest::Client::new();
 
     // Set up the store for the wasm function to use
-    let dummy_data = ["apple", "banana", "pear"].iter().map(|s| s.to_string()).collect::<Vec<String>>();
-    let store: StorageProvider = match deployment_env.as_str() {
-        "local" => {
-            near_user = true;
-            let mut store = StorageProvider::Dummy(DummyStorage {
-                store: Arc::new(Mutex::new(HashMap::new())),
-                writes: Vec::new(),
+    let store: StorageProvider = match use_scylla {
+        true => {
+            let scylla_ep = match std::env::var("SCYLLA_EP") {
+                Ok(env) => env,
+                Err(_) => panic!("Trying to use scylla without a specified endpoint"),
+            };
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .region("None")
+                .endpoint_url(scylla_ep)
+                .load().await;
+            StorageProvider::Dynamo(DynamoStore {
+                client: aws_sdk_dynamodb::Client::new(&config),
+                all_writes: Vec::new(),
                 // table_partition: None,
-            });
-
-            for (i, data) in dummy_data.iter().enumerate() {
-                store.put("radical_testing".into(), format!("user-{}", i).into(), serde_json::json!({
-                    "password": data,
-                }).to_string().into_bytes()).await;
-            } 
-            store
+            })
         },
-        "edge" => {
-            near_user = true;
+        false => {
             let region = RegionProviderChain::default_provider().or_else("eu-central-1");
             let config = aws_config::defaults(BehaviorVersion::latest())
                 .region(region)
                 .load()
                 .await;
 
-            let store = StorageProvider::Dynamo(DynamoStore {
+            StorageProvider::Dynamo(DynamoStore {
                 client: aws_sdk_dynamodb::Client::new(&config),
                 all_writes: Vec::new(),
                 // table_partition: None,
-            });
-
-            store
+            })
         },
-        "datacenter" => {
-            near_user = false;
-            let region = RegionProviderChain::default_provider().or_else("eu-central-1");
-            let config = aws_config::defaults(BehaviorVersion::latest())
-                .region(region)
-                .load()
-                .await;
-
-            let store = StorageProvider::Dynamo(DynamoStore {
-                client: aws_sdk_dynamodb::Client::new(&config),
-                all_writes: Vec::new(),
-                // table_partition: None,
-            });
-
-            store
-        }
-        _ => panic!("Invalid deployment environment"),
     };
 
-    
     run(service_fn(|event: Request| async {
         entry_point(event, &mut store.clone(), near_user, client.clone()).await
     })).await
