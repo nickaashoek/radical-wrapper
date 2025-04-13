@@ -25,6 +25,7 @@ REMOTE_URL = "https://r3e4tdhdvlpbsjcwvxnqe4f7ia0dyyjd.lambda-url.eu-west-3.on.a
 DEPLOYMENT = "datacenter"
 USE_SCYLLA = "true"
 SCYLLA_EP = "http://localhost:8192"
+AWS_LOG_LEVEL = "INFO"
 
 [package.metadata.lambda.deploy]
 memory = 2048                    # Function's memory

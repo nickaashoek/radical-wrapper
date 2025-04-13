@@ -1,4 +1,4 @@
-use lambda_extension::{NextEvent, LambdaEvent, Error};
+use lambda_extension::{NextEvent, LambdaEvent, Error, tracing};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 use serde_json::Value;
@@ -16,7 +16,7 @@ impl FollowupExtension {
     }
 
     pub async fn invoke(&self, event: LambdaEvent) -> Result<(), Error> {
-        eprintln!("[followup] received an event");
+        tracing::info!("[followup] received an event");
         match event.next {
             NextEvent::Shutdown(shutdown) => {
                 return Err(anyhow!("followup received unexpected shutdown evvent: {:?}",  shutdown).into())
@@ -24,7 +24,7 @@ impl FollowupExtension {
             NextEvent::Invoke(_e) => {}
         }
 
-        eprintln!("[followup] waiting for updates to arrive");
+        tracing::info!("[followup] waiting for updates to arrive");
         let updates = self.update_receiver
             .lock()
             .await
@@ -33,11 +33,11 @@ impl FollowupExtension {
             .ok_or_else(|| anyhow!("channel is closed"))?;
 
         if updates.len() == 0 {
-            eprintln!("[followup] no updates included, no need to do anything");
+            tracing::info!("[followup] no updates included, no need to do anything");
         } else {
-            eprintln!("[followup] going to send followup");
+            tracing::info!("[followup] going to send followup");
         }
-        eprintln!("[followup] done handling updates");
+        tracing::info!("[followup] done handling updates");
         Ok(())
     }
 }

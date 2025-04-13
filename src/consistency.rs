@@ -50,11 +50,6 @@ impl ConsistencyCheckBody {
         key_set: KeySet,
         args: Value,
         remote_endpoint: String) -> Self {
-        // Sanity check to make sure we're interleaving with the execution of the function
-        // for i in 0..10 {
-        //     println!("Check body creation: {}", i);
-        //     sleep(Duration::from_millis(100)).await;
-        // }
 
         let read_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.read_set);
         let write_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.write_set);
@@ -134,7 +129,7 @@ impl ConsistencyClient {
             .unwrap();
 
         let resp_json: Value = res.json().await.unwrap();
-        println!("Reponse json: {:?}", resp_json);
+        tracing::info!("Reponse json: {:?}", resp_json);
         let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
         Ok(response)
     }

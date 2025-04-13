@@ -108,6 +108,7 @@ impl <D: Storage> RadicalHandler<D> {
             "check_status": check_status,
         });
 
+
         let resp = Response::builder()
             .status(200)
             .header("Content-Type", "application/json")
@@ -244,7 +245,7 @@ impl <D: Storage> RadicalHandler<D> {
 
     pub async fn dc_handler(&mut self, event: Request) -> Result<Response<Body>, Error> {
         let e2e_start = Instant::now();
-        tracing::info!("Entering into the function at the edge");
+        tracing::info!("Entering into the function in the datacenter");
 
         let body = event.body().to_vec();
         let body_json = serde_json::from_slice::<serde_json::Value>(&body)?;
@@ -504,12 +505,14 @@ async fn main() -> Result<(), Error> {
     };
 
     let use_scylla = match std::env::var("USE_SCYLLA") {
-        Ok(_) => true,
+        Ok(env) => env.as_str() == "true",
         Err(_) => false
     };
 
     if use_scylla {
-        tracing::info!("Using scylla as the dynamo backend through the alternator")
+        tracing::info!("Using scylla as the dynamo backend through the alternator");
+    } else {
+        tracing::info!("Using DynamoDB instead of Scylla as the storage backend");
     }
 
     let near_user = match deployment_env.as_str() {
@@ -541,9 +544,10 @@ async fn main() -> Result<(), Error> {
                 .region(region)
                 .load()
                 .await;
-
+            let client = aws_sdk_dynamodb::Client::new(&config);
+            tracing::info!("Setting up dynamo client to region {}", config.region().unwrap());
             StorageProvider::Dynamo(DynamoStore {
-                client: aws_sdk_dynamodb::Client::new(&config),
+                client,
                 all_writes: Vec::new(),
             })
         },
@@ -570,7 +574,7 @@ async fn main() -> Result<(), Error> {
             .register()
             .await?;
 
-        println!("[main] setup extension");
+        tracing::info!("[main] setup extension");
 
         tokio::try_join!(
             run(service_fn(|event: Request| async {
