@@ -22,14 +22,14 @@ def get_check_url(region):
                 if tag['Key'] == 'Name' and tag['Value'] == 'CheckServer':
                     return "http://{}:8000".format(instance['PublicIpAddress'])
 
-def setup_envs(check_url, data_url):
+def setup_envs(check_url, data_url, use_scylla):
     '''
     Setup two strings that serve as the environment variables for the two functions
     User must have: CHECK_URL, REMOTE_URL, and DEPLOYMENT
     Data must have: DEPLOYMENT only, but fill in both to be safe
     '''
-    user_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=edge"
-    data_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=datacenter"
+    user_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=edge,USE_SCYLLA={use_scylla}"
+    data_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=datacenter,USE_SCYLLA={use_scylla}"
     return user_env, data_env
 
 
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     check_url = get_check_url(args.data_region)
     print("Located near data function at:", data_url)
     print("Located check server at:", check_url)
-    user_env, data_env = setup_envs(check_url, data_url)
+    user_env, data_env = setup_envs(check_url, data_url, "false")
 
     deploy_function(args.user_region, user_env, args.func_name, args.wasm_blob)
     print("Done deploying user function")
