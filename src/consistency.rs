@@ -117,10 +117,6 @@ impl ConsistencyClient {
         format!("{}/check", self.url)
     }
 
-    fn followup_endpoint(&self) -> String {
-        format!("{}/update", self.url)
-    }
-
     pub async fn do_check(&self, check_body: ConsistencyCheckBody) -> Result<CheckResult, ()> {
         let res = self.client.post(self.check_endpoint())
             .json(&check_body)
@@ -132,19 +128,5 @@ impl ConsistencyClient {
         tracing::info!("Reponse json: {:?}", resp_json);
         let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
         Ok(response)
-    }
-
-    pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
-        let follow_up = serde_json::json!({
-            "Updates": writes,
-            "Id": id.to_string()
-        });
-        tracing::info!("Follow up: {:?} to {}", follow_up, self.followup_endpoint());
-        self.client.post(self.followup_endpoint())
-            .json(&follow_up)
-            .send()
-            .await
-            .unwrap();
-        Ok(())
     }
 }

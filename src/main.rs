@@ -71,11 +71,11 @@ struct RadicalHandler<D: Storage> {
     latencies: HashMap<String, u128>,
     remote_latencies: HashMap<String, i64>,
     check_url: String,
-    update_sender: UnboundedSender<Vec<serde_json::Value>>,
+    update_sender: UnboundedSender<FollowupContent>,
 }
 
 impl <D: Storage> RadicalHandler<D> {
-    pub fn new(input_store: D, update_channel: UnboundedSender<Vec<serde_json::Value>>) -> Self {
+    pub fn new(input_store: D, update_channel: UnboundedSender<FollowupContent>) -> Self {
         let check_url = match std::env::var("CHECK_URL") {
             Ok(url) => url,
             Err(_) => panic!("CHECK_URL not set"),
@@ -214,7 +214,7 @@ impl <D: Storage> RadicalHandler<D> {
         let check_wait_start = Instant::now();
         let (check_result, check_duration) = match consistency_handle.await.unwrap() {
             Ok(res) => res,
-            Err(e) => return Err(WrapperError::CheckError("Consistency check error".to_string()).into()),
+            Err(_e) => return Err(WrapperError::CheckError("Consistency check error".to_string()).into()),
         };
         self.add_latency("check_wait", check_wait_start.elapsed());
         self.add_latency("consistency_check", check_duration);
@@ -224,7 +224,7 @@ impl <D: Storage> RadicalHandler<D> {
             tracing::info!("Consistency check passed. Collect updates and forward along.");
             self.add_latency("e2e", e2e_start.elapsed());
             let follow_up_start = Instant::now();
-            self.update_sender.send(updates).map_err(Box::new)?;
+            self.update_sender.send(FollowupContent { updates, id: exec_id }).map_err(Box::new)?;
             self.add_latency("followup", follow_up_start.elapsed());
             return self.construct_response(wasm_result, Vec::new(), false);
         } else {
@@ -257,6 +257,7 @@ impl <D: Storage> RadicalHandler<D> {
             true => Uuid::new_v4(),
             false => Uuid::parse_str(body_json["id"].as_str().unwrap()).unwrap(),
         };
+        tracing::info!("Starting execution {} in the datacenter", exec_id);
 
         let (mut wasm_blob, instance) = match self.setup_wasm_blob(&args).await {
                 Ok((w, i)) => (w, i),
@@ -278,222 +279,6 @@ impl <D: Storage> RadicalHandler<D> {
         self.add_latency("e2e", e2e_start.elapsed());
         self.construct_response(wasm_result, updates, false)
     }
-}
-
-async fn _entry_point<D: Storage + 'static>(_event: Request, store: &mut D, near_user: bool, client: reqwest::Client) -> Result<Response<Body>, Error> {
-    let e2e_start = Instant::now();
-    tracing::info!("Entering into the function");
-    let check_url = match std::env::var("CHECK_URL") {
-        Ok(url) => url,
-        Err(_) => panic!("CHECK_URL not set"),
-    };
-
-    tracing::info!("Getting the body json from the request to the function");
-    let body = _event.body().to_vec();
-    let body_json= serde_json::from_slice::<serde_json::Value>(&body)?;
-    let args = body_json["args"].clone();
-    let mut latencies: HashMap<String, u128> = HashMap::new();
-    let mut exec_id = Uuid::new_v4();
-    if !body_json["id"].is_null() {
-        exec_id = Uuid::parse_str(body_json["id"].as_str().unwrap()).unwrap();
-    }
-
-    let check_client = ConsistencyClient::new(check_url.clone(), client);
-
-    let wasm_setup_start = Instant::now();
-    let mut config = Config::new();
-    config.async_support(true);
-    let blob_start= Instant::now();
-    let (mut wasm_blob, read_time, setup_time) = WasmBlob::setup_blob(config, "function.serialized", store.clone());
-    latencies.insert("blob_read".to_string(), read_time.as_millis());
-    latencies.insert("blob_compile".to_string(), setup_time.as_millis());
-    let blob_load_duration = blob_start.elapsed();
-    latencies.insert("blob_load".to_string(), blob_load_duration.as_millis());
-
-    // Setup the wasm blob to link the read/write functions
-    let blob_link_start = Instant::now();
-    match wasm_blob.link_blob() {
-        Ok(_) => tracing::info!("Wasm module linked successfully"),
-        Err(e) => return Err(WasmError::LinkerError(e.to_string()).into()),
-    }
-    let blob_link_duration = blob_link_start.elapsed();
-    latencies.insert("blob_link".to_string(), blob_link_duration.as_millis());
-
-    tracing::info!("Setting up the instance");
-    // Setup an instance of the blob that we can use to run the function + guess
-    let instant_setup_start = Instant::now();
-    tracing::info!("Setting up wasm blob with args: {}", serde_json::to_string(&args).unwrap());
-    let args_vec = serde_json::to_vec(&args).unwrap();
-    let arg_len = args_vec.len() as i32;
-    let instance = match wasm_blob.setup_instance(args_vec).await {
-        Ok(instance) => instance,
-        Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
-    };
-    let instant_setup_duration = instant_setup_start.elapsed();
-    latencies.insert("instance_setup".to_string(), instant_setup_duration.as_millis());
-    let wasm_setup_duration = wasm_setup_start.elapsed();
-    latencies.insert("wasm_setup".to_string(), wasm_setup_duration.as_millis());
-
-    let mut key_set = KeySet {
-        read_set: Vec::new(),
-        write_set: Vec::new(),
-    };
-
-    if near_user {
-        tracing::info!("Instance setup; going to guess the key");
-        // Guess the key set so we can hand it to the consistency check
-        let key_guess_start = Instant::now();
-
-        key_set = match wasm_blob.guess_key(instance, arg_len).await {
-            Ok(ks) => ks,
-            Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
-        };
-
-        let key_guess_duration = key_guess_start.elapsed();
-        latencies.insert("key_guess".to_string(), key_guess_duration.as_millis());
-        tracing::info!("Key set contains {} read keys and {} write keys", key_set.read_set.len(), key_set.write_set.len());
-    }
-
-
-    let check_store = store.clone();
-
-    let split_start = Instant::now();
-    let consistency_handle;
-    let check_start = Instant::now();
-    if near_user {
-        let remote_endpoint = match std::env::var("REMOTE_URL") {
-            Ok(endpoint) => endpoint,
-            Err(_) => panic!("REMOTE_ENDPOINT not set"),
-        };
-        let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
-        let spawn_start = Instant::now();
-        tracing::info!("Sending consistency check request");
-        consistency_handle = tokio::spawn(async move {
-            let check_start = Instant::now();
-            match check_client.do_check(check_body).await {
-                Ok(res) => {
-                    let check_duration = check_start.elapsed();
-                    tracing::info!("Check duration: {:?}", check_duration);
-                    Ok((res, check_duration))
-                },
-                Err(e) => Err(e),
-            }
-        });
-        let spawn_end = Instant::now();
-        latencies.insert("spawn_check".to_string(), spawn_end.duration_since(spawn_start).as_millis());
-    } else {
-        consistency_handle = tokio::spawn(async move {
-            Ok((CheckResult {
-                check_result: false,
-                result: serde_json::Value::Null,
-                updates: Vec::new(),
-                latencies: HashMap::new(),
-            }, Instant::now().duration_since(check_start)))
-        });
-    }
-
-    // Run the wasm blob, this should be happening in parallel with the check
-    wasm_blob.store.data_mut().reset_writes();
-    // let wasm_handle = tokio::spawn(wasm_blob.run_blob(instance, arg_len));
-    let wasm_blob_start = Instant::now();
-    wasm_blob.store.data_mut().reset_writes();
-    let wasm_result = match wasm_blob.run_blob(instance, arg_len).await {
-        Ok(res) => res,
-        Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
-    };
-    tracing::info!("Result of wasm execution: {}", serde_json::to_string(&wasm_result).unwrap());
-    let updates = wasm_blob.store.data().get_all_writes();
-    // println!("All writes: {}", serde_json::to_string_pretty(&all_writes).unwrap());
-    let wasm_blob_duration = wasm_blob_start.elapsed();
-
-    let response: serde_json::Value;
-
-    // Only do the consistency check if we're near the user
-    if near_user {
-        let check_wait_start = Instant::now();
-        let (check_result, check_duration) = match consistency_handle.await.unwrap() {
-            Ok(res) => res,
-            Err(_) => return Err(WrapperError::CheckError("Consistency Check error".to_string()).into()),
-        };
-        latencies.insert("consistency_check".to_string(), check_duration.as_millis());
-        let check_wait_duration = check_wait_start.elapsed();
-        latencies.insert("check_wait".to_string(), check_wait_duration.as_millis());
-        let split_end = split_start.elapsed();
-        latencies.insert("split".to_string(), split_end.as_millis());
-        latencies.insert("wasm_execution".to_string(), wasm_blob_duration.as_millis());
-
-        if check_result.check_result {
-            tracing::info!("Consistency check passed. Collect updates and forward.");
-            // Spawn a thread to send the followup in the background
-            let followup_start = Instant::now();
-            if updates.len() == 0 {
-                tracing::info!("No updates to apply");
-            } else {
-                tracing::info!("Sending over {} updates", updates.len());
-                tokio::spawn(async move {
-                    let client = reqwest::Client::new();
-                    let check_client = ConsistencyClient::new(check_url.clone(), client);
-                    match check_client.do_followup(exec_id, updates).await {
-                        Ok(_) => tracing::info!("Followup sent successfully"),
-                        Err(_) => tracing::info!("Failed to send followup"),
-                    }
-                });
-            }
-            let followup_duration = followup_start.elapsed();
-            latencies.insert("followup".to_string(), followup_duration.as_millis());
-            let e2e_end = e2e_start.elapsed();
-            latencies.insert("e2e".to_string(), e2e_end.as_millis());
-            response = serde_json::json!({
-                "result": wasm_result,
-                "latencies": latencies,
-                "remote_latencies": check_result.latencies,
-                "check_status": true,
-            });
-        } else {
-            tracing::info!("Consistency check failed. Syncing state and returning near data result");
-            if check_result.updates.len() == 0 {
-                tracing::info!("No updates to apply");
-            } else {
-                tracing::info!("Should apply {} updates", check_result.updates.len());
-                let update_start = Instant::now();
-                store.batch_update(&check_result.updates).await;
-                let update_duration = update_start.elapsed();
-                latencies.insert("update_state".to_string(), update_duration.as_millis());
-            }
-            let e2e_end = e2e_start.elapsed();
-            latencies.insert("e2e".to_string(), e2e_end.as_millis());
-            response = serde_json::json!({
-                "result": check_result.result,
-                "latencies": latencies,
-                "remote_latencies": check_result.latencies,
-                "check_status": false,
-            });
-        }
-    } else {
-        let collect_updates_start = Instant::now();
-        let updates = store.get_all_writes();
-        let collect_updates_duration = collect_updates_start.elapsed();
-        latencies.insert("wasm_execution".to_string(), wasm_blob_duration.as_millis());
-        latencies.insert("collect_updates".to_string(), collect_updates_duration.as_millis());
-        tracing::info!("Made {} updates", updates.len());
-        let e2e_end = e2e_start.elapsed();
-        latencies.insert("e2e".to_string(), e2e_end.as_millis());
-        response = serde_json::json!({
-            "result": wasm_result,
-            "updates": updates,
-            "latencies": latencies,
-        });
-    }
-
-    tracing::info!("Done with function, returning back to user");
-
-
-    let resp = Response::builder()
-    .status(200)
-    .header("Content-Type", "application/json")
-    .body(response.to_string().into())
-    .map_err(Box::new)?;
-    Ok(resp)
 }
 
 #[tokio::main]
@@ -520,7 +305,8 @@ async fn main() -> Result<(), Error> {
         "datacenter" => false,
         _ => panic!("unknown deployment env")
     };
-    let client = reqwest::Client::new();
+    let handler_client = reqwest::Client::new();
+    let followup_client = reqwest::Client::new();
 
     // Set up the store for the wasm function to use
     let store: StorageProvider = match use_scylla {
@@ -554,7 +340,7 @@ async fn main() -> Result<(), Error> {
     };
 
     // Setup the radical handler
-    let (update_sender, update_receiver) = unbounded_channel::<Vec<serde_json::Value>>();
+    let (update_sender, update_receiver) = unbounded_channel::<FollowupContent>();
     let radical_handler = Arc::new(Mutex::new(RadicalHandler::new(store.clone(), update_sender)));
     if !near_user {
         // If we're in the datacenter, don't need to worry about the extension since we never follow up
@@ -563,7 +349,9 @@ async fn main() -> Result<(), Error> {
         })).await
     } else {
         // Setup the lambda_extension
-        let followup_ext = Arc::new(FollowupExtension::new(update_receiver));
+        let followup_ext = Arc::new(
+            FollowupExtension::new(followup_client.clone(), update_receiver)
+        );
         let extension = lambda_extension::Extension::new()
             .with_events(&["INVOKE"])
             .with_events_processor(service_fn(|event| {
@@ -578,7 +366,7 @@ async fn main() -> Result<(), Error> {
 
         tokio::try_join!(
             run(service_fn(|event: Request| async {
-                radical_handler.lock().await.edge_handler(event, client.clone()).await
+                radical_handler.lock().await.edge_handler(event, handler_client.clone()).await
             })),
             extension.run(),
         )?;
