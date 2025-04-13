@@ -12,7 +12,7 @@ def fetch_url(lambda_client, region, function):
     func_arn = func_data['Configuration']['FunctionArn']
     url = lambda_client.get_function_url_config(FunctionName=func_arn)
     return url['FunctionUrl']
- 
+
 def get_check_url(region):
     ec2_client = boto3.client('ec2', region_name=region)
     instances = ec2_client.describe_instances()
@@ -31,7 +31,7 @@ def setup_envs(check_url, data_url):
     user_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=edge"
     data_env = f"CHECK_URL={check_url},REMOTE_URL={data_url},DEPLOYMENT=datacenter"
     return user_env, data_env
-    
+
 
 def deploy_function(region, env_str, func_name, blob_path):
     subprocess.run(["sh", "./deploy.sh", region, env_str, func_name, blob_path])
@@ -49,10 +49,10 @@ if __name__ == "__main__":
     parser.add_argument("--wasm-blob", dest="wasm_blob", type=str, help="Path to the blob to include with the function deploy", default="function.serialized")
     parser.add_argument("--build", dest="build", action="store_true", default=False, help="build the function as well")
     args = parser.parse_args()
-    
+
     if args.build:
         command = subprocess.run(["cargo", "lambda", "build", "--release", "--arm64"])
-    
+
     user_client = boto3.client('lambda', region_name=args.user_region)
     data_client = boto3.client('lambda', region_name=args.data_region)
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         exists = True
     else:
         print(f"Function {args.func_name} found in {args.user_region}. Checking URLs and then maybe updating.")
-    
+
     data_url = fetch_url(data_client, args.data_region, args.func_name)
     check_url = get_check_url(args.data_region)
     print("Located near data function at:", data_url)

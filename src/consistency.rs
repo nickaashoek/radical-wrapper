@@ -44,7 +44,12 @@ pub struct ConsistencyCheckBody {
 }
 
 impl ConsistencyCheckBody {
-    pub async fn create<D: Storage>(external_store: &D, execution_id: Uuid, key_set: KeySet, args: Value, remote_endpoint: String) -> Self {
+    pub async fn create<D: Storage>(
+        external_store: &D,
+        execution_id: Uuid,
+        key_set: KeySet,
+        args: Value,
+        remote_endpoint: String) -> Self {
         // Sanity check to make sure we're interleaving with the execution of the function
         // for i in 0..10 {
         //     println!("Check body creation: {}", i);
@@ -58,7 +63,7 @@ impl ConsistencyCheckBody {
         let mut write_keys = Vec::new();
 
         let mut track_reads= HashSet::new();
-        let mut track_writes = HashSet::new();  
+        let mut track_writes = HashSet::new();
 
         let mut table_key_pairs = Vec::new();
         for (table, key) in read_key_set {
@@ -81,9 +86,9 @@ impl ConsistencyCheckBody {
                 version = v;
             }
             let key_info = KeyInfo {
-                table: table,
+                table,
                 key: key.clone(),
-                version: version,
+                version,
             };
             if track_reads.contains(&key) {
                 read_keys.push(key_info);
@@ -95,10 +100,10 @@ impl ConsistencyCheckBody {
         }
 
         return ConsistencyCheckBody {
-            read_keys: read_keys,
-            write_keys: write_keys,
+            read_keys,
+            write_keys,
             id: execution_id.to_string(),
-            args: args,
+            args,
             function: remote_endpoint.clone(),
             consistency_rate: -1.0,
         }
@@ -108,7 +113,7 @@ impl ConsistencyCheckBody {
 impl ConsistencyClient {
     pub fn new(url: String, client: Client) -> Self {
         Self {
-            client: client,
+            client,
             url: url.clone()
         }
     }
@@ -129,7 +134,7 @@ impl ConsistencyClient {
             .unwrap();
 
         let resp_json: Value = res.json().await.unwrap();
-        println!("Reponse json: {:?}", resp_json);   
+        println!("Reponse json: {:?}", resp_json);
         let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
         Ok(response)
     }
