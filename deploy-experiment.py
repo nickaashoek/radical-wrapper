@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", dest="profile", type=str, help="profile file for a given experimental deployment")
     parser.add_argument("--functions", dest="functions", type=str, help="JSON file listing all the functions to deploy")
-    parser.add_argument("--data-region", dest="data_region", type=str, help="which region to use for the backup function", default="us-east-2")
+    parser.add_argument("--data-region", dest="data_region", nargs="+", type=str, help="which region to use for the backup function", default=["us-east-2"])
     parser.add_argument("--use-scylla", dest="use_scylla", action="store_true", default=False, help="Whether to deploy using scylla or dynamo")
     parser.add_argument("--build", dest="build", action="store_true", default=False, help="build the wrapper as well")
     parser.add_argument("--log-level", dest="log_level", type=str, default="INFO", help="Set the logging level (DEBUG, INFO, WARNING, ERROR)")
@@ -94,13 +94,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Parse the deployment profile
-    data_region = None
+    data_regions = []
     user_regions = []
     with open(args.profile, 'r') as f:
         dictreader = csv.DictReader(f)
         for row in csv.DictReader(f):
-            if row['region'] == args.data_region:
-                data_region = row
+            if row['region'] in args.data_region:
+                data_regions.append(row)
             else:
                 user_regions.append(row)
 
@@ -117,18 +117,20 @@ if __name__ == "__main__":
         print("Function to deploy:", function, "with blob:", functions[function])
 
     # Deploy the functions to reach region and configure them properly
-    data_client = boto3.client('lambda', region_name=args.data_region)
     backup_urls = dict()
     # Setup the data functions first
-    check_url = f"http://{data_region['check_server']}:8000"
-    scylla_ep = f"http://{data_region['syclla_ip']}:8192"
+    check_url = f"http://{data_regions[0]['check_server']}:8000"
 
-    for function, blob_path in functions.items():
-        func_setup(data_client, function, blob_path)
-        backup_url = fetch_url(data_client, args.data_region, function)
-        backup_urls[function] = backup_url
-        _, data_env = setup_envs(check_url, backup_url, args.use_scylla, scylla_ep, args.log_level)
-        deploy_function(args.data_region, data_env, function, blob_path)
+    for region in data_regions:
+        data_client = boto3.client('lambda', region_name=region['region'])
+        region_name = region['region']
+        scylla_ep = f"http://{region['syclla_ip']}:8192"
+        for function, blob_path in functions.items():
+            func_setup(data_client, function, blob_path)
+            backup_url = fetch_url(data_client, region_name, function)
+            backup_urls[function] = backup_url
+            _, data_env = setup_envs(check_url, backup_url, args.use_scylla, scylla_ep, args.log_level)
+            deploy_function(region_name, data_env, function, blob_path)
 
     for region in user_regions:
         user_client = boto3.client('lambda', region_name=region['region'])
@@ -136,6 +138,7 @@ if __name__ == "__main__":
         for function, blob_path in functions.items():
             func_setup(user_client, function, blob_path)
             # Get the appropriate bacup url
+            scylla_ep = f"http://{region['syclla_ip']}:8192"
             backup_url = backup_urls[function]
             user_env, _ = setup_envs(check_url, backup_url, args.use_scylla, scylla_ep, args.log_level)
             deploy_function(region['region'], user_env, function, blob_path)
