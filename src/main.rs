@@ -219,6 +219,7 @@ impl <D: Storage> RadicalHandler<D> {
         self.add_latency("check_wait", check_wait_start.elapsed());
         self.add_latency("consistency_check", check_duration);
         self.add_latency("split", split_start.elapsed());
+        self.remote_latencies = check_result.latencies.clone();
 
         if check_result.check_result {
             tracing::info!("Consistency check passed. Collect updates and forward along.");
@@ -226,7 +227,7 @@ impl <D: Storage> RadicalHandler<D> {
             let follow_up_start = Instant::now();
             self.update_sender.send(FollowupContent { updates, id: exec_id }).map_err(Box::new)?;
             self.add_latency("followup", follow_up_start.elapsed());
-            return self.construct_response(wasm_result, Vec::new(), false);
+            return self.construct_response(wasm_result, Vec::new(), check_result.check_result);
         } else {
             tracing::info!("Consistency check failed. Return result from DC");
             if check_result.updates.len() == 0 {
@@ -238,8 +239,7 @@ impl <D: Storage> RadicalHandler<D> {
                 self.add_latency("update_state", update_start.elapsed());
             }
             self.add_latency("e2e", e2e_start.elapsed());
-            self.remote_latencies = check_result.latencies;
-            return self.construct_response(wasm_result, Vec::new(), false);
+            return self.construct_response(wasm_result, Vec::new(), check_result.check_result);
         }
     }
 
