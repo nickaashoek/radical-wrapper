@@ -146,6 +146,7 @@ impl Storage for DynamoStore {
         let result = self.client
             .get_item()
             .table_name(table)
+            .consistent_read(true)
             .key("id", AttributeValue::B(Blob::new(key.clone())))
             .send()
             .await
@@ -182,7 +183,7 @@ impl Storage for DynamoStore {
         for (table, keys) in key_map {
             batch_input.insert(
                 table,
-                KeysAndAttributes::builder().set_keys(Some(keys)).build().unwrap(),
+                KeysAndAttributes::builder().set_keys(Some(keys)).consistent_read(true).build().unwrap(),
             );
         }
 
