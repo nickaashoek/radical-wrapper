@@ -79,13 +79,7 @@ impl<D: Storage> WasmBlob<D> {
     pub fn link_blob(&mut self) -> wasmtime::Result<()> {
         self.linker.func_wrap_async("env", "get_key", | mut caller: Caller<'_, MyState<D>>, input: (u32, u32, u32, u32, u32) | {
             Box::new(async move {
-                // Sanity check to make sure we're getting some interleaving
-                // for i in 0..10 {
-                //     println!("Read function wrapper: {}", i);
-                //     sleep(Duration::from_millis(100)).await;
-                // }
                 let (result_base, table_base, table_len, key_base, key_len) = input;
-                println!("Calling into the get wrapper");
                 let memory = caller.get_export("memory").and_then(|m| m.into_memory()).unwrap();
                 let mut table = Vec::new();
                 table.resize(table_len as usize, 0);
@@ -103,14 +97,11 @@ impl<D: Storage> WasmBlob<D> {
                 memory.write(caller.as_context_mut(), result_offset, result.as_slice()).unwrap();
                 memory.write(caller.as_context_mut(), result_base as usize, &((result_offset as u32).to_le_bytes())).unwrap();
                 memory.write(caller.as_context_mut(), result_base as usize + 4, &((result.len() as u32).to_le_bytes())).unwrap();
-
-                println!("reading {:?} {:?}", String::from_utf8(key.clone()), String::from_utf8(result));
             })
         })?;
 
         self.linker.func_wrap_async("env", "put_key", | mut caller: Caller<'_, MyState<D>>, input: (u32, u32, u32, u32, u32, u32) | {
             Box::new(async move {
-                println!("Calling into the put wrapper");
                 let (table_base, table_len, key_base, key_len, value_base, value_len) = input;
 
                 let memory = caller.get_export("memory").and_then(|m| m.into_memory()).unwrap();
@@ -128,7 +119,7 @@ impl<D: Storage> WasmBlob<D> {
                 memory.read(caller.as_context_mut(), value_base as usize, value.as_mut_slice()).unwrap();
 
                 let state = caller.data_mut();
-                println!("writing {:?} {:?} to table {}", String::from_utf8(key.clone()), String::from_utf8(value.clone()), table);
+                tracing::info!("writing {:?} {:?} to table {}", String::from_utf8(key.clone()), String::from_utf8(value.clone()), table);
 
                 state.external_store.put(table, key, value).await;
             })
@@ -156,7 +147,7 @@ impl<D: Storage> WasmBlob<D> {
 
         // Fetch and return the result
         let result_slice = read_result_from_wasm(&memory, &self.store, 0)?;
-        println!("Result slice: {:?}", String::from_utf8(result_slice.clone()));
+        tracing::info!("Result slice: {:?}", String::from_utf8(result_slice.clone()));
         let result_obj = serde_json::from_slice::<WasmResult>(&result_slice).unwrap();
         Ok(result_obj)
     }

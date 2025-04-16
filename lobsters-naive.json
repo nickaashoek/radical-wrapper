@@ -1,0 +1,7 @@
+{
+    "lobsters-homepage-naive": "../radical-serializer/functions/lobsters-homepage.serialized",
+    "lobsters-interact-naive": "../radical-serializer/functions/lobsters-interact.serialized",
+    "lobsters-login-naive": "../radical-serializer/functions/lobsters-login.serialized",
+    "lobsters-post-naive": "../radical-serializer/functions/lobsters-post.serialized",
+    "lobsters-view-naive": "../radical-serializer/functions/lobsters-view.serialized"
+}

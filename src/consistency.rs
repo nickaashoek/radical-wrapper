@@ -44,12 +44,12 @@ pub struct ConsistencyCheckBody {
 }
 
 impl ConsistencyCheckBody {
-    pub async fn create<D: Storage>(external_store: &D, execution_id: Uuid, key_set: KeySet, args: Value, remote_endpoint: String) -> Self {
-        // Sanity check to make sure we're interleaving with the execution of the function
-        // for i in 0..10 {
-        //     println!("Check body creation: {}", i);
-        //     sleep(Duration::from_millis(100)).await;
-        // }
+    pub async fn create<D: Storage>(
+        external_store: &D,
+        execution_id: Uuid,
+        key_set: KeySet,
+        args: Value,
+        remote_endpoint: String) -> Self {
 
         let read_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.read_set);
         let write_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.write_set);
@@ -58,7 +58,7 @@ impl ConsistencyCheckBody {
         let mut write_keys = Vec::new();
 
         let mut track_reads= HashSet::new();
-        let mut track_writes = HashSet::new();  
+        let mut track_writes = HashSet::new();
 
         let mut table_key_pairs = Vec::new();
         for (table, key) in read_key_set {
@@ -74,16 +74,16 @@ impl ConsistencyCheckBody {
         let batch_start = std::time::Instant::now();
         let items = external_store.batch_get(&table_key_pairs).await;
         let batch_duration = batch_start.elapsed();
-        tracing::info!("Batch get duration: {:?}", batch_duration);
-        for (table, key, version_value) in items {
+        tracing::info!("[{}] Batch get duration: {} for {} items", execution_id, batch_duration.as_millis(), items.len());
+        for (table, key, version_num) in items {
             let mut version = -1;
-            if let Some((v, _)) = version_value {
+            if let Some(v) = version_num {
                 version = v;
             }
             let key_info = KeyInfo {
-                table: table,
+                table,
                 key: key.clone(),
-                version: version,
+                version,
             };
             if track_reads.contains(&key) {
                 read_keys.push(key_info);
@@ -95,10 +95,10 @@ impl ConsistencyCheckBody {
         }
 
         return ConsistencyCheckBody {
-            read_keys: read_keys,
-            write_keys: write_keys,
+            read_keys,
+            write_keys,
             id: execution_id.to_string(),
-            args: args,
+            args,
             function: remote_endpoint.clone(),
             consistency_rate: -1.0,
         }
@@ -108,7 +108,7 @@ impl ConsistencyCheckBody {
 impl ConsistencyClient {
     pub fn new(url: String, client: Client) -> Self {
         Self {
-            client: client,
+            client,
             url: url.clone()
         }
     }
@@ -117,34 +117,32 @@ impl ConsistencyClient {
         format!("{}/check", self.url)
     }
 
-    fn followup_endpoint(&self) -> String {
-        format!("{}/update", self.url)
-    }
-
     pub async fn do_check(&self, check_body: ConsistencyCheckBody) -> Result<CheckResult, ()> {
-        let res = self.client.post(self.check_endpoint())
-            .json(&check_body)
-            .send()
-            .await
-            .unwrap();
+        let mut resp = self.client.post(self.check_endpoint())
+                .json(&check_body)
+                .send()
+                .await;
 
-        let resp_json: Value = res.json().await.unwrap();
-        println!("Reponse json: {:?}", resp_json);   
-        let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
-        Ok(response)
-    }
+        // Apparently the first request can fail? Let's just retry a bunch
+        if !resp.is_ok() {
+            for _ in 0..3 {
+                resp = self.client.post(self.check_endpoint())
+                        .json(&check_body)
+                        .send()
+                        .await;
+                if resp.is_ok() {
+                    break
+                }
+            }
+        }
 
-    pub async fn do_followup(&self, id: Uuid, writes: Vec<Value>) -> Result<(), ()> {
-        let follow_up = serde_json::json!({
-            "Updates": writes,
-            "Id": id.to_string()
-        });
-        tracing::info!("Follow up: {:?} to {}", follow_up, self.followup_endpoint());
-        self.client.post(self.followup_endpoint())
-            .json(&follow_up)
-            .send()
-            .await
-            .unwrap();
-        Ok(())
+        if let Ok(res) = resp {
+            let resp_json: Value = res.json().await.unwrap();
+            tracing::info!("Reponse json: {:?}", resp_json);
+            let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
+            Ok(response)
+        } else {
+            panic!("Failed to send consistency check {}", resp.err().unwrap())
+        }
     }
 }

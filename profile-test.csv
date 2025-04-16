@@ -1,0 +1,3 @@
+region,syclla_ip,client_ip,backup_region,local_table,global_table,global_dynamo_region,check_server
+us-east-2,3.132.88.238,18.191.78.131,us-east-2,radical_testing,radical_global,us-east-2,3.133.56.83
+us-east-1,34.203.178.121,52.7.153.137,us-east-2,radical_testing,radical_global,us-east-1,3.133.56.83

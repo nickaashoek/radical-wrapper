@@ -37,7 +37,7 @@ pub trait Storage: Clone + Send {
     fn put(&mut self, table: String, key: Vec<u8>, value: Vec<u8>) -> impl std::future::Future<Output = ()> + Send;
     fn get(&self, table: String, key: &Vec<u8>) -> impl std::future::Future<Output = Option<(i64, Vec<u8>)>> + Send;
 
-    fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> impl std::future::Future<Output = Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)>> + Send;
+    fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> impl std::future::Future<Output = Vec<(String, Vec<u8>, Option<i64>)>> + Send;
     fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> impl std::future::Future<Output = ()> + Send;
 
     fn reset_writes(&mut self);
@@ -84,11 +84,14 @@ impl Storage for DummyStorage {
         self.store.lock().await.get(&(table.clone(), key.clone())).map(Clone::clone)
     }
 
-    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)> {
+    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<i64>)> {
         let mut items = Vec::new();
         for (table, key) in table_key_pairs {
-            let item = self.get(table.clone(), &key.clone()).await;
-            items.push((table.clone(), key.clone(), item));
+            let mut ver = None;
+            if let Some((v, _)) = self.get(table.clone(), &key.clone()).await {
+                ver = Some(v);
+            }
+            items.push((table.clone(), key.clone(), ver));
         }
         items
     }
@@ -132,20 +135,22 @@ impl Storage for DynamoStore {
         self.client
             .update_item()
             .table_name(table)
-            .key("id", AttributeValue::B(Blob::new(key)))
+            .key("id", AttributeValue::B(Blob::new(key.clone())))
             .expression_attribute_values(":value", AttributeValue::B(Blob::new(value)))
             .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
             .update_expression("ADD version :one SET object_value = :value")
             .send()
             .await
             .expect("failed to put_item");
+        tracing::info!("Put item {}", String::from_utf8(key.clone()).unwrap());
     }
 
     async fn get(&self, table: String, key: &Vec<u8>) -> Option<(i64, Vec<u8>)> {
-        tracing::info!("Going to get item from table {} with key {}", table, String::from_utf8(key.clone()).unwrap());
+        // tracing::info!("Going to get item from table {} with key {}", table, String::from_utf8(key.clone()).unwrap());
         let result = self.client
             .get_item()
             .table_name(table)
+            .consistent_read(true)
             .key("id", AttributeValue::B(Blob::new(key.clone())))
             .send()
             .await
@@ -153,14 +158,14 @@ impl Storage for DynamoStore {
 
 
         result.item().and_then(|item| {
-            tracing::info!("Got item {:?}", item);
+            tracing::info!("Got item {}", String::from_utf8(key.clone()).unwrap());
             let version = item.get("version")?.as_n().ok()?.parse::<i64>().ok()?;
             let value = item.get("object_value")?.as_b().ok()?.clone().into_inner();
             Some((version, value))
         })
     }
 
-    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)> {
+    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<i64>)> {
         let mut key_map = HashMap::<String, Vec<HashMap<String, AttributeValue>>>::new();
         for (table, key) in table_key_pairs {
             // let table = make_partition(table.to_string(), self.table_partition);
@@ -182,7 +187,12 @@ impl Storage for DynamoStore {
         for (table, keys) in key_map {
             batch_input.insert(
                 table,
-                KeysAndAttributes::builder().set_keys(Some(keys)).build().unwrap(),
+                KeysAndAttributes::builder()
+                    .set_keys(Some(keys))
+                    .projection_expression("id,version")
+                    .consistent_read(true)
+                    .build()
+                    .unwrap(),
             );
         }
 
@@ -193,7 +203,7 @@ impl Storage for DynamoStore {
             .await
             .expect("batch_get_item failed");
 
-        let mut output_vec = Vec::new();
+        let mut output_vec: Vec<(String, Vec<u8>, Option<i64>)> = Vec::new();
         if let Some(responses) = result.responses() {
             for (table, items) in responses {
                 for item in items {
@@ -202,17 +212,19 @@ impl Storage for DynamoStore {
                         .and_then(|v| { v.as_n().ok() })
                         .and_then(|v| { v.parse::<i64>().ok() });
 
-                    let value = item.get("object_value")
-                        .and_then(|v| { v.as_b().ok() })
-                        .and_then(|v| { Some(v.clone().into_inner()) });
+                    // We don't actually need to get the value here, since we're just using it to check
+                    // The version numbers. This should hopefully speed things up!
+                    // let value = item.get("object_value")
+                    //     .and_then(|v| { v.as_b().ok() })
+                    //     .and_then(|v| { Some(v.clone().into_inner()) });
 
-                    let version_value = if let (Some(version), Some(value)) = (version, value) {
-                        Some((version, value))
-                    } else {
-                        None
-                    };
+                    // let version_value = if let (Some(version), Some(value)) = (version, value) {
+                    //     Some((version, value))
+                    // } else {
+                    //     None
+                    // };
 
-                    output_vec.push((table.to_string(), key.to_vec(), version_value));
+                    output_vec.push((table.to_string(), key.to_vec(), version));
                 }
             }
         }
@@ -220,10 +232,19 @@ impl Storage for DynamoStore {
     }
 
     async fn batch_update(&mut self, table_key_pairs: &Vec<UpdateItem>) -> () {
-        let mut input_items = Vec::<WriteRequest>::new();
+        // Split the input items into groups of size 20 since that's the max
+        // on a batch write. For some reason this isn't handled automatically?
 
-        for item in     table_key_pairs {
-            tracing::info!("Setting up put request for item {} {:?}", String::from_utf8(item.key.clone()).unwrap(), item.key.clone());
+        let batch_size = 20;
+
+        let mut batches = Vec::<Vec<WriteRequest>>::new();
+        for _ in 0..table_key_pairs.len().div_ceil(batch_size) {
+            batches.push(Vec::new());
+        }
+
+        let mut current_batch = 0;
+        let mut batch_items = 0;
+        for item in table_key_pairs {
             let put_request =  PutRequest::builder()
                     .item("id", AttributeValue::B(Blob::new(item.key.clone())))
                     .item("object_value", AttributeValue::B(Blob::new(item.value.clone())))
@@ -234,14 +255,23 @@ impl Storage for DynamoStore {
             let write_request = WriteRequest::builder()
                 .put_request(put_request)
                 .build();
-            input_items.push(write_request);
+            batches[current_batch].push(write_request);
+            batch_items += 1;
+            if batch_items == batch_size {
+                current_batch += 1;
+                batch_items = 0;
+            }
         }
 
-        self.client.batch_write_item()
-            .request_items("radical_testing", input_items)
-            .send()
-            .await
-            .expect("batch_write_item failed");
+        tracing::info!("Writing in {} batches for {} total items", batches.len(), table_key_pairs.len());
+        for batch in batches.iter() {
+            tracing::info!("Writing batch with {} items", batch.len());
+            self.client.batch_write_item()
+                .request_items("radical_testing", batch.to_vec())
+                .send()
+                .await
+                .expect("batch_write_item failed");
+        }
     }
 
     fn reset_writes(&mut self) {
@@ -278,7 +308,7 @@ impl Storage for StorageProvider {
         }
     }
 
-    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<(i64, Vec<u8>)>)> {
+    async fn batch_get(&self, table_key_pairs: &Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>, Option<i64>)> {
         match self {
             StorageProvider::Dummy(store) => store.batch_get(table_key_pairs).await,
             StorageProvider::Dynamo(store) => store.batch_get(table_key_pairs).await,
