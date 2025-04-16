@@ -1,0 +1,7 @@
+region,client_ip,backup_region,local_table,check_server
+us-east-1,52.7.153.137,us-east-1,radical_testing,3.221.106.150
+us-west-1,54.177.205.122,us-east-1,radical_testing,3.221.106.150
+us-west-2,34.214.77.67,us-east-1,radical_testing,3.221.106.150
+eu-central-1,3.72.156.118,us-east-1,radical_testing,3.221.106.150
+eu-west-1,34.248.37.83,us-east-1,radical_testing,3.221.106.150
+ap-northeast-1,3.115.68.12,us-east-1,radical_testing,3.221.106.150
