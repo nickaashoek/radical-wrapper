@@ -11,7 +11,13 @@ def parse_profile(profile_file):
 
 def fetch_url(lambda_client, region, function):
     response = lambda_client.list_functions()
-    functions = set([f['FunctionName'] for f in response.get('Functions', [])])
+    all_functions = []
+    all_functions.extend([f['FunctionName'] for f in response.get('Functions', [])])
+    while 'NextMarker' in response:
+        response = lambda_client.list_functions(Marker=response['NextMarker'])
+        all_functions.extend([f['FunctionName'] for f in response.get('Functions', [])])
+
+    functions = set(all_functions)
     if function not in functions:
         print(f"Function {function} not found in {region}")
         return None
@@ -84,6 +90,9 @@ def func_setup(lambda_client, function, blob_path):
 def fill_backups(check_client, check_region, function_names):
     backups = dict()
     for function in function_names:
+        if function.endswith('naive'):
+            backups[function] = "None"
+            continue
         backup_url = fetch_url(check_client, check_region, function + "-naive")
         print("Backup to", function, "is", backup_url)
         backups[function] = backup_url
@@ -133,8 +142,10 @@ if __name__ == "__main__":
     backup_urls = dict()
     # Setup the data functions first
     check_url = f"http://{check_region['check_server']}:8000"
+    print("CHECK REGION", check_region)
     check_client = boto3.client('lambda', region_name=check_region['region'])
     backup_urls = fill_backups(check_client, check_region['region'], [f for f in functions])
+    print("BACKUPS", backup_urls)
 
     for region in data_regions:
         data_client = boto3.client('lambda', region_name=region['region'])
