@@ -45,7 +45,6 @@ def setup_envs(check_url, data_url, use_scylla, scylla_ep, log_level):
             AWS_LAMBDA_LOG_LEVEL={log_level}"
 
     data_env = f"CHECK_URL={check_url},\
-            REMOTE_URL={data_url},\
             DEPLOYMENT=datacenter,\
             USE_SCYLLA=false,\
             SCYLLA_EP={scylla_ep},\
@@ -82,23 +81,37 @@ def func_setup(lambda_client, function, blob_path):
     else:
         print(f"Function {function} already exists in {lambda_client.meta.region_name}. Updating...")
 
+def fill_backups(check_client, check_region, function_names):
+    backups = dict()
+    for function in function_names:
+        backup_url = fetch_url(check_client, check_region, function + "-naive")
+        print("Backup to", function, "is", backup_url)
+        backups[function] = backup_url
+    return backups
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", dest="profile", type=str, help="profile file for a given experimental deployment")
     parser.add_argument("--functions", dest="functions", type=str, help="JSON file listing all the functions to deploy")
-    parser.add_argument("--data-region", dest="data_region", nargs="+", type=str, help="which region to use for the backup function", default=["us-east-2"])
+    parser.add_argument("--data-region", dest="data_region", nargs="*", type=str, help="which region to use for the backup function", default=[])
     parser.add_argument("--use-scylla", dest="use_scylla", action="store_true", default=False, help="Whether to deploy using scylla or dynamo")
     parser.add_argument("--build", dest="build", action="store_true", default=False, help="build the wrapper as well")
     parser.add_argument("--log-level", dest="log_level", type=str, default="INFO", help="Set the logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("--check-region", dest="check_region", type=str, default="us-east-1")
 
     args = parser.parse_args()
 
     # Parse the deployment profile
     data_regions = []
     user_regions = []
+    check_region = None
     with open(args.profile, 'r') as f:
         dictreader = csv.DictReader(f)
         for row in csv.DictReader(f):
+            if row['region'] == args.check_region:
+                check_region = row
             if row['region'] in args.data_region:
                 data_regions.append(row)
             else:
@@ -119,26 +132,32 @@ if __name__ == "__main__":
     # Deploy the functions to reach region and configure them properly
     backup_urls = dict()
     # Setup the data functions first
-    check_url = f"http://{data_regions[0]['check_server']}:8000"
+    check_url = f"http://{check_region['check_server']}:8000"
+    check_client = boto3.client('lambda', region_name=check_region['region'])
+    backup_urls = fill_backups(check_client, check_region['region'], [f for f in functions])
 
     for region in data_regions:
         data_client = boto3.client('lambda', region_name=region['region'])
         region_name = region['region']
-        scylla_ep = f"http://{region['syclla_ip']}:8192"
+        scylla_ep = "NO SCYLLA"
+        if "syclla_ip" in region:
+            scylla_ep = f"http://{region['syclla_ip']}:8192"
+        print("=== Deploying to data region", region_name, "===\n\n")
         for function, blob_path in functions.items():
             func_setup(data_client, function, blob_path)
-            backup_url = fetch_url(data_client, region_name, function)
-            backup_urls[function] = backup_url
-            _, data_env = setup_envs(check_url, backup_url, args.use_scylla, scylla_ep, args.log_level)
+            _, data_env = setup_envs(check_url, "", args.use_scylla, scylla_ep, args.log_level)
             deploy_function(region_name, data_env, function, blob_path)
 
     for region in user_regions:
         user_client = boto3.client('lambda', region_name=region['region'])
         # Setup the user functions
+        print("=== Deploying to user region", region['region'], "===\n\n")
         for function, blob_path in functions.items():
             func_setup(user_client, function, blob_path)
-            # Get the appropriate bacup url
-            scylla_ep = f"http://{region['syclla_ip']}:8192"
+            # Get the appropriate backup url, which should be the name of the function with -naive after it
+            scylla_ep="NO SCYLLA"
+            if 'scylla_ip' in region:
+                scylla_ep = f"http://{region['syclla_ip']}:8192"
             backup_url = backup_urls[function]
             user_env, _ = setup_envs(check_url, backup_url, args.use_scylla, scylla_ep, args.log_level)
             deploy_function(region['region'], user_env, function, blob_path)

@@ -97,8 +97,6 @@ impl<D: Storage> WasmBlob<D> {
                 memory.write(caller.as_context_mut(), result_offset, result.as_slice()).unwrap();
                 memory.write(caller.as_context_mut(), result_base as usize, &((result_offset as u32).to_le_bytes())).unwrap();
                 memory.write(caller.as_context_mut(), result_base as usize + 4, &((result.len() as u32).to_le_bytes())).unwrap();
-
-                tracing::info!("reading {:?} {:?}", String::from_utf8(key.clone()), String::from_utf8(result));
             })
         })?;
 

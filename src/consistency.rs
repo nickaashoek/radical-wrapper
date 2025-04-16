@@ -74,10 +74,10 @@ impl ConsistencyCheckBody {
         let batch_start = std::time::Instant::now();
         let items = external_store.batch_get(&table_key_pairs).await;
         let batch_duration = batch_start.elapsed();
-        tracing::info!("Batch get duration: {:?}", batch_duration);
-        for (table, key, version_value) in items {
+        tracing::info!("[{}] Batch get duration: {} for {} items", execution_id, batch_duration.as_millis(), items.len());
+        for (table, key, version_num) in items {
             let mut version = -1;
-            if let Some((v, _)) = version_value {
+            if let Some(v) = version_num {
                 version = v;
             }
             let key_info = KeyInfo {
@@ -118,15 +118,31 @@ impl ConsistencyClient {
     }
 
     pub async fn do_check(&self, check_body: ConsistencyCheckBody) -> Result<CheckResult, ()> {
-        let res = self.client.post(self.check_endpoint())
-            .json(&check_body)
-            .send()
-            .await
-            .unwrap();
+        let mut resp = self.client.post(self.check_endpoint())
+                .json(&check_body)
+                .send()
+                .await;
 
-        let resp_json: Value = res.json().await.unwrap();
-        tracing::info!("Reponse json: {:?}", resp_json);
-        let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
-        Ok(response)
+        // Apparently the first request can fail? Let's just retry a bunch
+        if !resp.is_ok() {
+            for _ in 0..3 {
+                resp = self.client.post(self.check_endpoint())
+                        .json(&check_body)
+                        .send()
+                        .await;
+                if resp.is_ok() {
+                    break
+                }
+            }
+        }
+
+        if let Ok(res) = resp {
+            let resp_json: Value = res.json().await.unwrap();
+            tracing::info!("Reponse json: {:?}", resp_json);
+            let response = serde_json::from_value::<CheckResult>(resp_json).unwrap();
+            Ok(response)
+        } else {
+            panic!("Failed to send consistency check {}", resp.err().unwrap())
+        }
     }
 }

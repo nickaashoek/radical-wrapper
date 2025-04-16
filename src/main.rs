@@ -168,14 +168,14 @@ impl <D: Storage> RadicalHandler<D> {
                 Err(e) => return Err(e),
         };
 
-        tracing::info!("Instance setup; going to guess the key");
+        tracing::info!("[{}] Instance setup; going to guess the key", exec_id);
         let key_guess_start = Instant::now();
         let key_set = match wasm_blob.guess_key(instance, args_len).await {
             Ok(ks) => ks,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into())
         };
         self.add_latency("key_guess", key_guess_start.elapsed());
-        tracing::info!("Key set contains {} read keys and {} write keys", key_set.read_set.len(), key_set.write_set.len());
+        tracing::info!("[{}] Key set contains {} read keys and {} write keys", exec_id, key_set.read_set.len(), key_set.write_set.len());
 
         let check_store = self.store.clone();
         let remote_endpoint = match std::env::var("REMOTE_URL") {
@@ -185,7 +185,9 @@ impl <D: Storage> RadicalHandler<D> {
 
         let split_start = Instant::now();
 
+        let body_start = Instant::now();
         let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
+        self.add_latency("body_end", body_start.elapsed());
         let spawn_start = Instant::now();
         let check_client = ConsistencyClient::new(self.check_url.clone(), client);
         let consistency_handle = tokio::spawn(async move {
@@ -193,7 +195,7 @@ impl <D: Storage> RadicalHandler<D> {
             match check_client.do_check(check_body).await {
                 Ok(res) => {
                     let duration = check_start.elapsed();
-                    tracing::info!("Check duration: {} ms", duration.clone().as_millis());
+                    tracing::info!("[{}] Check duration: {} ms", exec_id, duration.clone().as_millis());
                     Ok((res, duration))
                 },
                 Err(e) => Err(e),
@@ -201,15 +203,20 @@ impl <D: Storage> RadicalHandler<D> {
         });
         self.add_latency("spawn_check", spawn_start.elapsed());
 
+        let reset_start = Instant::now();
         wasm_blob.store.data_mut().reset_writes();
+        self.add_latency("reset_writes", reset_start.elapsed());
         let wasm_blob_start = Instant::now();
         let wasm_result = match wasm_blob.run_blob(instance, args_len).await {
             Ok(res) => res,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
         };
-        tracing::info!("result of wasm execution: {}", serde_json::to_string(&wasm_result).unwrap());
-        let updates = wasm_blob.store.data().get_all_writes();
+        tracing::info!("[{}] result of wasm execution: {}", exec_id, serde_json::to_string(&wasm_result).unwrap());
         self.add_latency("wasm_execution", wasm_blob_start.elapsed());
+        let get_write_start = Instant::now();
+        let updates = wasm_blob.store.data().get_all_writes();
+        self.add_latency("collect_writes", get_write_start.elapsed());
+
 
         let check_wait_start = Instant::now();
         let (check_result, check_duration) = match consistency_handle.await.unwrap() {
@@ -222,18 +229,18 @@ impl <D: Storage> RadicalHandler<D> {
         self.remote_latencies = check_result.latencies.clone();
 
         if check_result.check_result {
-            tracing::info!("Consistency check passed. Collect updates and forward along.");
+            tracing::info!("[{}] Consistency check passed. Collect updates and forward along.", exec_id);
             self.add_latency("e2e", e2e_start.elapsed());
             let follow_up_start = Instant::now();
             self.update_sender.send(FollowupContent { updates, id: exec_id }).map_err(Box::new)?;
             self.add_latency("followup", follow_up_start.elapsed());
             return self.construct_response(wasm_result, Vec::new(), check_result.check_result);
         } else {
-            tracing::info!("Consistency check failed. Return result from DC");
+            tracing::info!("[{}] Consistency check failed. Return result from DC", exec_id);
             if check_result.updates.len() == 0 {
-                tracing::info!("No updates to apply");
+                tracing::info!("[{}] No updates to apply", exec_id);
             } else {
-                tracing::info!("Should apply {} updates from the DC", check_result.updates.len());
+                tracing::info!("[{}] Should apply {} updates from the DC", exec_id, check_result.updates.len());
                 let update_start = Instant::now();
                 self.store.batch_update(&check_result.updates).await;
                 self.add_latency("update_state", update_start.elapsed());
@@ -305,6 +312,7 @@ async fn main() -> Result<(), Error> {
         "datacenter" => false,
         _ => panic!("unknown deployment env")
     };
+
     let handler_client = reqwest::Client::new();
     let followup_client = reqwest::Client::new();
 
