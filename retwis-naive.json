@@ -1,0 +1,7 @@
+{
+    "retwis-login-naive": "../radical-serializer/functions/retwis-login.serialized",
+    "retwis-post-naive": "../radical-serializer/functions/retwis-post.serialized",
+    "retwis-profile-naive": "../radical-serializer/functions/retwis-profile.serialized",
+    "retwis-follow-naive": "../radical-serializer/functions/retwis-follow.serialized",
+    "retwis-timeline-naive": "../radical-serializer/functions/retwis-timeline.serialized"
+}

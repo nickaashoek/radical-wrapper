@@ -1,0 +1,8 @@
+{
+    "hotel-attractions": "../radical-serializer/functions/hotel-attractions.serialized",
+    "hotel-book": "../radical-serializer/functions/hotel-book.serialized",
+    "hotel-login": "../radical-serializer/functions/hotel-login.serialized",
+    "hotel-recommend": "../radical-serializer/functions/hotel-recommend.serialized",
+    "hotel-review": "../radical-serializer/functions/hotel-review.serialized",
+    "hotel-search": "../radical-serializer/functions/hotel-search.serialized"
+}

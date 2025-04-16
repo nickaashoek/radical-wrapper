@@ -1,0 +1,7 @@
+{
+    "retwis-login-global": "../radical-serializer/functions/retwis-login.serialized",
+    "retwis-post-global": "../radical-serializer/functions/retwis-post.serialized",
+    "retwis-profile-global": "../radical-serializer/functions/retwis-profile.serialized",
+    "retwis-follow-global": "../radical-serializer/functions/retwis-follow.serialized",
+    "retwis-timeline-global": "../radical-serializer/functions/retwis-timeline.serialized"
+}
