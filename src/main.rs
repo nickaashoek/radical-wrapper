@@ -10,6 +10,8 @@ use uuid::{self, Uuid};
 use std::time::Instant;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use serde::Serialize;
+use serde_json::Value;
 
 mod storage;
 use storage::*;
@@ -64,6 +66,15 @@ impl From<WrapperError> for Diagnostic {
             error_message: error_message.into(),
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExecutionResult {
+    pub result: WasmResult,
+    pub read_keys: Vec<(String, Vec<u8>)>,
+    pub write_updates: Vec<Value>,
+    pub latencies: HashMap<String, u128>,
+    pub remote_latencies: HashMap<String, i64>,
 }
 
 struct RadicalHandler<D: Storage> {
@@ -168,86 +179,99 @@ impl <D: Storage> RadicalHandler<D> {
                 Err(e) => return Err(e),
         };
 
-        tracing::info!("[{}] Instance setup; going to guess the key", exec_id);
-        let key_guess_start = Instant::now();
-        let key_set = match wasm_blob.guess_key(instance, args_len).await {
-            Ok(ks) => ks,
-            Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into())
-        };
-        self.add_latency("key_guess", key_guess_start.elapsed());
-        tracing::info!("[{}] Key set contains {} read keys and {} write keys", exec_id, key_set.read_set.len(), key_set.write_set.len());
+        // Track read keys during execution
+        let mut read_keys = Vec::new();
+        let mut encountered_stale_key = false;
 
-        let check_store = self.store.clone();
-        let remote_endpoint = match std::env::var("REMOTE_URL") {
-            Ok(url) => url,
-            Err(_) => panic!("REMOTE_ENDPOINT not set"),
+        // Wrap the storage operations to track reads and check for stale keys
+        let store_wrapper = StorageWrapper {
+            inner: &mut wasm_blob.store,
+            read_keys: &mut read_keys,
+            encountered_stale: &mut encountered_stale_key,
         };
 
-        let split_start = Instant::now();
-
-        let body_start = Instant::now();
-        let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
-        self.add_latency("body_end", body_start.elapsed());
-        let spawn_start = Instant::now();
-        let check_client = ConsistencyClient::new(self.check_url.clone(), client);
-        let consistency_handle = tokio::spawn(async move {
-            let check_start = Instant::now();
-            match check_client.do_check(check_body).await {
-                Ok(res) => {
-                    let duration = check_start.elapsed();
-                    tracing::info!("[{}] Check duration: {} ms", exec_id, duration.clone().as_millis());
-                    Ok((res, duration))
-                },
-                Err(e) => Err(e),
-            }
-        });
-        self.add_latency("spawn_check", spawn_start.elapsed());
-
-        let reset_start = Instant::now();
-        wasm_blob.store.data_mut().reset_writes();
-        self.add_latency("reset_writes", reset_start.elapsed());
+        // Execute the function
         let wasm_blob_start = Instant::now();
         let wasm_result = match wasm_blob.run_blob(instance, args_len).await {
             Ok(res) => res,
             Err(e) => return Err(WasmError::WasmExecError(e.to_string()).into()),
         };
-        tracing::info!("[{}] result of wasm execution: {}", exec_id, serde_json::to_string(&wasm_result).unwrap());
         self.add_latency("wasm_execution", wasm_blob_start.elapsed());
+
+        // Get write updates
         let get_write_start = Instant::now();
         let updates = wasm_blob.store.data().get_all_writes();
         self.add_latency("collect_writes", get_write_start.elapsed());
 
-
-        let check_wait_start = Instant::now();
-        let (check_result, check_duration) = match consistency_handle.await.unwrap() {
-            Ok(res) => res,
-            Err(_e) => return Err(WrapperError::CheckError("Consistency check error".to_string()).into()),
-        };
-        self.add_latency("check_wait", check_wait_start.elapsed());
-        self.add_latency("consistency_check", check_duration);
-        self.add_latency("split", split_start.elapsed());
-        self.remote_latencies = check_result.latencies.clone();
-
-        if check_result.check_result {
-            tracing::info!("[{}] Consistency check passed. Collect updates and forward along.", exec_id);
+        // If we encountered a stale key, we need to execute at DC
+        if encountered_stale_key {
+            tracing::info!("[{}] Encountered stale key, executing at DC", exec_id);
+            let dc_result = self.execute_at_dc(args, exec_id).await?;
             self.add_latency("e2e", e2e_start.elapsed());
-            let follow_up_start = Instant::now();
-            self.update_sender.send(FollowupContent { updates, id: exec_id }).map_err(Box::new)?;
-            self.add_latency("followup", follow_up_start.elapsed());
-            return self.construct_response(wasm_result, Vec::new(), check_result.check_result);
-        } else {
-            tracing::info!("[{}] Consistency check failed. Return result from DC", exec_id);
-            if check_result.updates.len() == 0 {
-                tracing::info!("[{}] No updates to apply", exec_id);
-            } else {
-                tracing::info!("[{}] Should apply {} updates from the DC", exec_id, check_result.updates.len());
-                let update_start = Instant::now();
-                self.store.batch_update(&check_result.updates).await;
-                self.add_latency("update_state", update_start.elapsed());
-            }
-            self.add_latency("e2e", e2e_start.elapsed());
-            return self.construct_response(wasm_result, Vec::new(), check_result.check_result);
+            return Ok(dc_result);
         }
+
+        // Create execution result
+        let execution_result = ExecutionResult {
+            result: wasm_result,
+            read_keys,
+            write_updates: updates,
+            latencies: self.latencies.clone(),
+            remote_latencies: self.remote_latencies.clone(),
+        };
+
+        // Send execution result to DC
+        let dc_url = match std::env::var("DC_URL") {
+            Ok(url) => url,
+            Err(_) => panic!("DC_URL not set"),
+        };
+
+        let dc_client = reqwest::Client::new();
+        let _ = dc_client.post(format!("{}/execution_result", dc_url))
+            .json(&execution_result)
+            .send()
+            .await?;
+
+        self.add_latency("e2e", e2e_start.elapsed());
+        
+        // Construct response
+        let response_body = serde_json::json!({
+            "result": execution_result.result,
+            "latencies": execution_result.latencies,
+            "remote_latencies": execution_result.remote_latencies,
+        });
+
+        let resp = Response::builder()
+            .status(200)
+            .header("Content-Type", "application/json")
+            .body(response_body.to_string().into())
+            .map_err(Box::new)?;
+        Ok(resp)
+    }
+
+    async fn execute_at_dc(&mut self, args: Value, exec_id: Uuid) -> Result<Response<Body>, Error> {
+        let dc_url = match std::env::var("DC_URL") {
+            Ok(url) => url,
+            Err(_) => panic!("DC_URL not set"),
+        };
+
+        let dc_client = reqwest::Client::new();
+        let dc_response = dc_client.post(&dc_url)
+            .json(&serde_json::json!({
+                "args": args,
+                "id": exec_id.to_string()
+            }))
+            .send()
+            .await?;
+
+        let dc_result: serde_json::Value = dc_response.json().await?;
+        
+        let resp = Response::builder()
+            .status(200)
+            .header("Content-Type", "application/json")
+            .body(dc_result.to_string().into())
+            .map_err(Box::new)?;
+        Ok(resp)
     }
 
     pub async fn dc_handler(&mut self, event: Request) -> Result<Response<Body>, Error> {
@@ -330,6 +354,7 @@ async fn main() -> Result<(), Error> {
             StorageProvider::Dynamo(DynamoStore {
                 client: aws_sdk_dynamodb::Client::new(&config),
                 all_writes: Vec::new(),
+                stale_keys: Vec::new(),
             })
         },
         false => {
@@ -343,6 +368,7 @@ async fn main() -> Result<(), Error> {
             StorageProvider::Dynamo(DynamoStore {
                 client,
                 all_writes: Vec::new(),
+                stale_keys: Vec::new(),
             })
         },
     };

@@ -14,6 +14,13 @@ pub struct KeySet {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct StaleKeyInfo {
+    pub table: String,
+    pub key: Vec<u8>,
+    pub is_value_replicated: bool,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct UpdateItem {
     #[serde(rename = "table")]
     pub table: String,
@@ -43,7 +50,11 @@ pub trait Storage: Clone + Send {
     fn reset_writes(&mut self);
     fn get_all_writes(&self) -> Vec<Value>;
 
-    // fn set_partition(&mut self, partition: i64);
+    // New functions for stale key tracking
+    fn is_key_stale(&self, table: &str, key: &Vec<u8>) -> bool;
+    fn update_stale_keys(&mut self, stale_keys: Vec<StaleKeyInfo>);
+    fn get_stale_keys(&self) -> Vec<StaleKeyInfo>;
+    fn clear_stale_keys(&mut self);
 }
 
 // fn get_partition_name(table: String, partition: Option<i64>) -> String {
@@ -119,6 +130,7 @@ impl Storage for DummyStorage {
 pub struct DynamoStore {
     pub client: aws_sdk_dynamodb::Client,
     pub all_writes: Vec<Value>,
+    pub stale_keys: Vec<StaleKeyInfo>,
     // pub table_partition: Option<i64>,
 }
 
@@ -282,9 +294,21 @@ impl Storage for DynamoStore {
         self.all_writes.clone()
     }
 
-    // fn set_partition(&mut self, partition: i64) {
-    //     self.table_partition = Some(partition);
-    // }
+    fn is_key_stale(&self, table: &str, key: &Vec<u8>) -> bool {
+        self.stale_keys.iter().any(|sk| sk.table == table && sk.key == *key)
+    }
+
+    fn update_stale_keys(&mut self, stale_keys: Vec<StaleKeyInfo>) {
+        self.stale_keys = stale_keys;
+    }
+
+    fn get_stale_keys(&self) -> Vec<StaleKeyInfo> {
+        self.stale_keys.clone()
+    }
+
+    fn clear_stale_keys(&mut self) {
+        self.stale_keys.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -342,4 +366,29 @@ impl Storage for StorageProvider {
     //         StorageType::Dynamo(store) => store.set_partition(partition),
     //     }
     // }
+}
+
+pub struct StorageWrapper<'a, D: Storage> {
+    pub inner: &'a mut Store<MyState<D>>,
+    pub read_keys: &'a mut Vec<(String, Vec<u8>)>,
+    pub encountered_stale: &'a mut bool,
+}
+
+impl<'a, D: Storage> StorageWrapper<'a, D> {
+    async fn get(&mut self, table: String, key: &Vec<u8>) -> Option<(i64, Vec<u8>)> {
+        // Track the read
+        self.read_keys.push((table.clone(), key.clone()));
+        
+        // Check if key is stale
+        if self.inner.data().is_key_stale(&table, key) {
+            *self.encountered_stale = true;
+            return None;
+        }
+        
+        self.inner.data().get(table, key).await
+    }
+
+    async fn put(&mut self, table: String, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.data_mut().put(table, key, value).await
+    }
 }
