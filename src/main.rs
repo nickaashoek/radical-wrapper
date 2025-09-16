@@ -358,30 +358,11 @@ async fn main() -> Result<(), Error> {
             })
         },
         false => {
-            let use_local = match std::env::var("DYNAMODB_LOCAL") {
-                Ok(env) => env.as_str() == "true",
-                Err(_) => false
-            };
-
-            let config = if use_local {
-                let local_endpoint = match std::env::var("DYNAMODB_LOCAL_ENDPOINT") {
-                    Ok(endpoint) => endpoint,
-                    Err(_) => String::from("http://localhost:8000"),
-                };
-                tracing::info!("Using DynamoDB Local at endpoint: {}", local_endpoint);
-                aws_config::defaults(BehaviorVersion::latest())
-                    .region("local")
-                    .endpoint_url(local_endpoint)
-                    .load()
-                    .await
-            } else {
-                let region = RegionProviderChain::default_provider().or_else("eu-central-1");
-                aws_config::defaults(BehaviorVersion::latest())
-                    .region(region)
-                    .load()
-                    .await
-            };
-
+            let region = RegionProviderChain::default_provider().or_else("eu-central-1");
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .region(region)
+                .load()
+                .await;
             let client = aws_sdk_dynamodb::Client::new(&config);
             tracing::info!("Setting up dynamo client to region {}", config.region().unwrap());
             StorageProvider::Dynamo(DynamoStore {
