@@ -77,3 +77,9 @@ To modify that, I wrote a little script `update-test-body.sh` which takes as inp
 `main.rs` will pass those arguments to the wasm function (hopefully correctly). So, you create a json file with the arguments to your function, and then run `update-test-body.sh` with your json file as the argument.
 
 i.e. `./update-test-body.sh synth-reader.json`, which should produce a file you can pass to `cargo lambda invoke` for local testing
+
+In totality, you need three things:
+
+1) A web assembly function pair (actual function and key guesser), these should be in the same `.wasm` file, and that should be compiled using the local serializer to give you a `function.serialized` file, which you copy to this directory.
+2) The wrapper (this directory). Run using `cargo lambda watch`, and invoke using above instructions
+3) A json file with the properly formatted arguments for your web assembly function. The example above matches for one of the synthetic functions. Make sure to use `update-test-body.sh` to get that into a properly escaped JSON string that's embedded in some other json file that's formatted for AWS Lambda to understand. You should then be able to invoke your function
