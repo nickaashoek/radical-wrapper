@@ -55,3 +55,25 @@ Read more about invoking the function in [the Cargo Lambda documentation for the
 To deploy the project, run `cargo lambda deploy`. This will create an IAM role and a Lambda function in your AWS account.
 
 Read more about deploying your lambda function in [the Cargo Lambda documentation](https://www.cargo-lambda.info/commands/deploy.html).
+
+## Running Radical
+
+Cargo lambda works as normal, invoke using `cargo lambda invoke test-rust --data-file test-event.json`
+
+To modify that, I wrote a little script `update-test-body.sh` which takes as input `test-event.json` and a second json file, which contains formatted arguments to a function. For example, for a function that just reads three keys, it might look like:
+
+```
+{
+	"args": {
+		"items": [
+			"synth-item-0",
+			"synth-item-1"
+		],
+		"delay": 0,
+		"tablename": "radical_testing"
+	}
+}
+```
+`main.rs` will pass those arguments to the wasm function (hopefully correctly). So, you create a json file with the arguments to your function, and then run `update-test-body.sh` with your json file as the argument.
+
+i.e. `./update-test-body.sh synth-reader.json`, which should produce a file you can pass to `cargo lambda invoke` for local testing
