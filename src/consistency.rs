@@ -41,6 +41,10 @@ pub struct ConsistencyCheckBody {
     pub function: String,
     #[serde(rename = "ccRate")]
     pub consistency_rate: f64,
+    #[serde(rename = "edgeId")]
+    pub edge_id: String,
+    #[serde(rename = "edgeEndpoint")]
+    pub edge_endpoint: String,
 }
 
 impl ConsistencyCheckBody {
@@ -49,7 +53,9 @@ impl ConsistencyCheckBody {
         execution_id: Uuid,
         key_set: KeySet,
         args: Value,
-        remote_endpoint: String) -> Self {
+        remote_endpoint: String,
+        edge_id: String,
+        edge_endpoint: String) -> Self {
 
         let read_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.read_set);
         let write_key_set: HashSet<(String, Vec<u8>)> = HashSet::from_iter(key_set.write_set);
@@ -101,6 +107,8 @@ impl ConsistencyCheckBody {
             args,
             function: remote_endpoint.clone(),
             consistency_rate: -1.0,
+            edge_id,
+            edge_endpoint,
         }
     }
 }

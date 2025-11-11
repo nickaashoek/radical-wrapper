@@ -1,1 +1,4 @@
 target
+edge-server.env.example
+src/bin
+EDGE_SERVER.md

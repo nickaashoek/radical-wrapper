@@ -24,6 +24,7 @@ mod followup;
 use followup::*;
 
 
+
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
     #[error("linker error: {0}")]
@@ -182,11 +183,27 @@ impl <D: Storage> RadicalHandler<D> {
             Ok(url) => url,
             Err(_) => panic!("REMOTE_ENDPOINT not set"),
         };
+        
+        let edge_id = match std::env::var("EDGE_ID") {
+            Ok(id) => id,
+            Err(_) => {
+                tracing::warn!("EDGE_ID not set, using default");
+                "edge-unknown".to_string()
+            }
+        };
+        
+        let edge_endpoint = match std::env::var("EDGE_ENDPOINT") {
+            Ok(endpoint) => endpoint,
+            Err(_) => {
+                tracing::warn!("EDGE_ENDPOINT not set, using default");
+                "http://localhost:3000".to_string()
+            }
+        };
 
         let split_start = Instant::now();
 
         let body_start = Instant::now();
-        let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint).await;
+        let check_body = ConsistencyCheckBody::create(&check_store, exec_id, key_set, args, remote_endpoint, edge_id, edge_endpoint).await;
         self.add_latency("body_end", body_start.elapsed());
         let spawn_start = Instant::now();
         let check_client = ConsistencyClient::new(self.check_url.clone(), client);
