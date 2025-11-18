@@ -1,10 +1,12 @@
 use std::io::Read;
+use std::collections::HashMap;
+use std::path::Path;
 
 use wasmtime::*;
 use serde_json::Value;
 use serde::{Serialize, Deserialize};
 use std::time::{Duration, Instant};
-use lambda_http::tracing;
+use tracing;
 // use tokio::time::{sleep, Duration};
 
 use super::storage::{Storage, KeySet};
@@ -41,6 +43,73 @@ pub struct WasmResult {
     pub result: Value,
 }
 
+/// Cache of precompiled WASM modules shared across requests
+pub struct WasmModuleCache {
+    engine: Engine,
+    modules: HashMap<String, Module>,
+}
+
+impl WasmModuleCache {
+    /// Load and precompile all WASM modules from the functions directory
+    pub fn load_all_modules(functions_dir: &str) -> Result<Self> {
+        let mut config = Config::new();
+        config.async_support(true);
+        let engine = Engine::new(&config)?;
+        let mut modules = HashMap::new();
+
+        tracing::info!("Loading WASM modules from {}", functions_dir);
+        
+        let dir_path = Path::new(functions_dir);
+        if !dir_path.exists() {
+            return Err(anyhow::anyhow!("Functions directory not found: {}", functions_dir));
+        }
+
+        for entry in std::fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            
+            if path.extension().and_then(|s| s.to_str()) == Some("serialized") {
+                let function_name = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Invalid function name"))?
+                    .to_string();
+                
+                tracing::info!("Loading function: {}", function_name);
+                
+                let mut file = std::fs::File::open(&path)?;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                
+                // Deserialize the precompiled module
+                let module = unsafe {
+                    Module::deserialize(&engine, &buf)?
+                };
+                
+                modules.insert(function_name.clone(), module);
+                tracing::info!("Successfully loaded function: {}", function_name);
+            }
+        }
+
+        tracing::info!("Loaded {} WASM modules", modules.len());
+        Ok(Self { engine, modules })
+    }
+
+    /// Get a precompiled module by function name
+    pub fn get_module(&self, function_name: &str) -> Option<&Module> {
+        self.modules.get(function_name)
+    }
+
+    /// Get the engine (for creating stores)
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
+    /// List all available function names
+    pub fn function_names(&self) -> Vec<String> {
+        self.modules.keys().cloned().collect()
+    }
+}
+
 pub struct WasmBlob<D: Storage> {
     pub store: Store<MyState<D>>,
     pub module: wasmtime::Module,
@@ -49,6 +118,21 @@ pub struct WasmBlob<D: Storage> {
 
 
 impl<D: Storage> WasmBlob<D> {
+    /// Create a WasmBlob from a precompiled module (preferred method for HTTP servers)
+    pub fn from_module(engine: &Engine, module: Module, external_store: D) -> Self {
+        let linker = Linker::new(&engine);
+        let state = MyState {
+            external_store: external_store.clone(),
+        };
+        let store = Store::new(&engine, state);
+        Self {
+            store,
+            module,
+            linker,
+        }
+    }
+
+    /// Legacy method for loading from file (kept for compatibility with Lambda)
     pub fn setup_blob(config: Config, path: &str, external_store: D) -> (Self, Duration, Duration) {
         let engine = Engine::new(&config).unwrap();
         let read_start = Instant::now();

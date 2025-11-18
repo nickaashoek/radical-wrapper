@@ -1,4 +1,7 @@
 target
 edge-server.env.example
-src/bin
 EDGE_SERVER.md
+NO_AWS_IMPLEMENTATION.md
+QUICKSTART.md
+src/.DS_Store
+TEST_RESULTS.md

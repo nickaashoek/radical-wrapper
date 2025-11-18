@@ -8,32 +8,59 @@ name = "test_rust"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bootstrap"
-path = "src/main.rs"
+name = "edge-handler"
+path = "src/bin/edge-handler.rs"
+
+[[bin]]
+name = "dc-handler"
+path = "src/bin/dc-handler.rs"
 
 [[bin]]
 name = "edge-server"
 path = "src/bin/edge-server.rs"
 
+[[bin]]
+name = "main"
+path = "src/main.rs"
+required-features = ["lambda"]
+
 [dependencies]
-lambda_http = "0.13.0"
-lambda-extension = "0.11.0"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-wasmtime = "25.0.1"
+# HTTP server dependencies
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = "0.4"
+
+# Lambda dependencies (optional)
+lambda_http = { version = "0.13.0", optional = true }
+lambda-extension = { version = "0.11.0", optional = true }
+
+# WASM runtime
+wasmtime = "26.0"
+
+# AWS SDK
 aws-config = { version= "1.5.10", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.54.0"
-serde_json = "1.0.132"
-serde = {version = "1.0.215", features = ["derive"]}
-thiserror = "2.0.3"
-reqwest = { version = "0.12.9", default-features =  false, features = ["json", "rustls-tls"] }
-uuid = { version = "1.11.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
 aws-types = "1.3.3"
+
+# Serialization
+serde_json = "1.0.132"
+serde = { version = "1.0.215", features = ["derive"] }
+serde_bytes = "0.11"
+
+# HTTP client
+reqwest = { version = "0.12.9", default-features = false, features = ["json", "rustls-tls"] }
+
+# Utilities
+uuid = { version = "1.11.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
 base64 = "0.22.1"
 anyhow = "1.0.97"
-axum = "0.7.5"
-tower = "0.5.1"
-tracing-subscriber = "0.3"
-serde_bytes = "0.11"
+thiserror = "2.0.3"
+
+[features]
+default = []
+lambda = ["lambda_http", "lambda-extension"]
 
 [package.metadata.lambda.env]
 CHECK_URL = "http://localhost:8000"

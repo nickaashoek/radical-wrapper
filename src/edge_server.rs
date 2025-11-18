@@ -8,7 +8,6 @@ use axum::{
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 
 use crate::storage::{DynamoStore, Storage, StorageProvider, UpdateItem};
@@ -50,7 +49,7 @@ async fn replicate_handler(
     
     tracing::info!("[{}] Received {} replication items", edge_id, items.len());
     
-    // Convert ReplicateItem to UpdateItem
+    // Convert to UpdateItems
     let update_items: Vec<UpdateItem> = items.into_iter().map(|item| item.into()).collect();
     
     // Write to storage

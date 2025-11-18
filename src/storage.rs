@@ -1,6 +1,6 @@
 use aws_sdk_dynamodb::types::{AttributeValue, KeysAndAttributes, PutRequest, WriteRequest};
 use aws_sdk_dynamodb::primitives::Blob;
-use lambda_http::tracing;
+use tracing;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{hash_map::Entry, HashMap}, sync::Arc};

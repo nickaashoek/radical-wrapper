@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
-use lambda_extension::{service_fn, tracing};
+use lambda_extension::service_fn;
 use lambda_http::{lambda_runtime::Diagnostic, run, Body, Error, Request, Response};
 use storage::Storage;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
-use lambda_http::tracing;
+use tracing;
 use reqwest::Client;
 use serde_json::Value;
 use uuid::Uuid;
